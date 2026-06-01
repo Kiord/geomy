@@ -1,0 +1,63 @@
+/* Shared landmark cursor affordance in the viewport. */
+.landmark-cursor-indicator {
+  position: absolute;
+  left: 0;
+  top: 0;
+  z-index: 60;
+  pointer-events: none;
+  user-select: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-height: 18px;
+  padding: 3px 7px;
+  border: 1px solid var(--border);
+  border-radius: 0;
+  background: color-mix(in srgb, var(--panel-bg) 90%, transparent);
+  color: var(--text);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.25);
+  font-family: var(--font-family);
+  font-size: 0.68rem;
+  line-height: 1;
+  white-space: nowrap;
+}
+
+.landmark-cursor-indicator.is-hidden {
+  display: none;
+}
+
+.landmark-cursor-indicator.is-alt {
+  border-color: var(--accent);
+}
+
+.landmark-cursor-indicator.is-shift {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent-dim) 55%, var(--panel-bg));
+}
+
+.landmark-cursor-indicator.is-ctrl {
+  border-color: var(--gold);
+  background: color-mix(in srgb, var(--gold-dim) 55%, var(--panel-bg));
+}
+
+.landmark-cursor-indicator .cursor-plus {
+  color: var(--accent);
+  font-weight: 800;
+  font-size: 0.9rem;
+}
+
+.landmark-cursor-indicator .cursor-minus {
+  color: var(--danger);
+  font-weight: 800;
+  font-size: 0.9rem;
+}
+
+.landmark-cursor-indicator .cursor-separator {
+  color: var(--text-dim);
+}
+
+.landmark-cursor-indicator .cursor-icon {
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.02em;
+}

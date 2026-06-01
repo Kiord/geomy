@@ -1,0 +1,201 @@
+/* Mesh Rigid Align task */
+
+.mesh-rigid-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 6px;
+}
+
+.mesh-rigid-view-buttons .btn.active,
+.mesh-rigid-mode-buttons .btn.active {
+  border-color: var(--accent);
+  background: var(--accent-dim);
+}
+
+.mesh-rigid-shortcut-hint {
+  margin-top: 6px;
+}
+
+.mesh-rigid-option-group {
+  border: 1px solid var(--border);
+  border-radius: 0;
+  padding: 8px;
+  background: var(--panel-bg);
+}
+
+.mesh-rigid-stat {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 5px 0;
+  border-bottom: 1px solid var(--border);
+  font-size: 0.76rem;
+}
+
+.mesh-rigid-stat:last-child {
+  border-bottom: none;
+}
+
+.mesh-rigid-stat span:last-child {
+  color: var(--text-dim);
+  font-family: var(--font-family);
+  text-align: right;
+}
+
+.mesh-rigid-file-input {
+  display: none;
+}
+
+.mesh-rigid-cursor-indicator {
+  position: absolute;
+  left: 0;
+  top: 0;
+  z-index: 70;
+  pointer-events: none;
+  user-select: none;
+  border: 2px solid var(--accent);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--accent-dim) 28%, transparent);
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.35), 0 0 12px var(--accent-dim);
+  transform: translate(-50%, -50%);
+  box-sizing: border-box;
+}
+
+.mesh-rigid-cursor-indicator.is-hidden {
+  display: none;
+}
+
+.mesh-rigid-landmark-list {
+  max-height: 220px;
+  overflow-y: auto;
+  margin-top: 6px;
+}
+
+.mesh-rigid-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 24px;
+  height: 20px;
+  border: 1px solid var(--border);
+  border-radius: 0;
+  color: var(--text-dim);
+  background: var(--panel-bg);
+  font-family: var(--font-family);
+  font-size: 0.65rem;
+  line-height: 1;
+}
+
+.mesh-rigid-badge.ready {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+
+.mesh-rigid-result {
+  margin-top: 7px;
+  padding: 7px 8px;
+  border-radius: 0;
+  background: var(--accent-dim);
+  color: var(--text-dim);
+  font-size: 0.72rem;
+  line-height: 1.35;
+}
+
+.mesh-rigid-cursor-indicator.is-component {
+  border-color: var(--gold);
+  background: color-mix(in srgb, var(--gold-dim) 38%, transparent);
+}
+
+.mesh-rigid-compact-actions {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(64px, 1fr));
+  gap: 5px;
+}
+
+.mesh-rigid-compact-actions .btn {
+  min-width: 0;
+  padding-left: 6px;
+  padding-right: 6px;
+}
+
+.mesh-rigid-landmark-list.is-imbalanced {
+  border: 1px solid color-mix(in srgb, var(--danger) 45%, var(--border));
+  border-radius: 0;
+  background: color-mix(in srgb, var(--danger) 8%, transparent);
+}
+
+.mesh-rigid-landmark-table {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 4px;
+}
+
+.mesh-rigid-landmark-head {
+  color: var(--text-dim);
+  font-size: 0.68rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  padding: 3px 5px;
+}
+
+.mesh-rigid-landmark-row {
+  display: contents;
+}
+
+.mesh-rigid-landmark-cell {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+  padding: 4px 5px;
+  border: 1px solid var(--border);
+  border-radius: 0;
+  background: var(--panel-bg);
+  font-size: 0.72rem;
+}
+
+.mesh-rigid-landmark-cell.selected {
+  outline: 1px solid var(--accent);
+  background: var(--accent-dim);
+}
+
+.mesh-rigid-landmark-cell.missing {
+  color: var(--text-dim);
+  background: color-mix(in srgb, var(--surface) 72%, transparent);
+}
+
+.mesh-rigid-landmark-row.incomplete .mesh-rigid-landmark-cell {
+  border-color: color-mix(in srgb, var(--danger) 35%, var(--border));
+}
+
+.mesh-rigid-landmark-placeholder {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+
+.mesh-rigid-option-group,
+.mesh-rigid-result,
+.mesh-rigid-grid > * {
+  min-width: 0;
+}
+
+.mesh-rigid-option-group .range-row,
+.mesh-rigid-result .range-row {
+  min-width: 0;
+  max-width: 100%;
+}
+
+.mesh-rigid-option-group input[type="range"],
+.mesh-rigid-result input[type="range"] {
+  min-width: 0;
+  max-width: 100%;
+}
+
+.mesh-rigid-option-group .range-val,
+.mesh-rigid-result .range-val {
+  max-width: 48px;
+}

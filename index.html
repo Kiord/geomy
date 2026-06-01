@@ -1,0 +1,290 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>geomy</title>
+    
+    <!-- Block render until theme is applied (no flash) -->
+    <script>
+      (function() {
+        var theme = localStorage.getItem('geomy-theme') || 'light';
+        document.documentElement.setAttribute('data-theme', theme);
+      })();
+    </script>
+
+  </head>
+  <body>
+
+    <!-- TOP BAR -->
+<div id="topbar">
+  <span class="logo">geomy</span>
+  <span class="sep">|</span>
+  <label>Task:</label>
+  <select id="task-select">
+    <option value="view" selected>Inspect</option>
+    <option value="landmark">Landmark Picking</option>
+    <option value="mask">Mesh Masking</option>
+    <option value="segment">Mesh Segmentation</option>
+    <option value="rigidAlign">Mesh Rigid Align</option>
+  </select>
+  <div class="spacer"></div>
+  <span id="vertex-count"></span>
+  <button id="theme-toggle" title="Toggle theme">Light</button>
+</div>
+
+    <!-- TASK PANEL (LEFT) -->
+    <div id="task-panel">
+      <div id="task-mesh-loader" style="display:grid;grid-template-columns:auto minmax(0,1fr);align-items:center;gap:8px;padding:8px;border:1px solid var(--border);border-radius:6px;background:var(--surface);">
+        <button type="button" class="btn" id="task-load-mesh-btn" style="padding:6px 10px;white-space:nowrap;">Load mesh</button>
+        <span id="task-loaded-mesh-name" style="min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--text-dim);font-size:0.75rem;">No mesh loaded</span>
+      </div>
+      <div id="task-content">
+        <!-- Filled dynamically by task module -->
+      </div>
+    </div>
+
+    <!-- VIEWPORT -->
+    <div id="viewport">
+      <div id="fps-counter">-- FPS</div>
+      <div id="drop-overlay">
+        <div id="drop-message">
+          Drop a 3D file here<br><small>.obj .stl .ply .glb .gltf</small>
+        </div>
+      </div>
+      <input type="file" id="file-input" accept=".obj,.stl,.ply,.glb,.gltf">
+    </div>
+
+    <!-- VISUALIZATION PANEL (RIGHT) -->
+   <div id="viz-panel">
+    <div class="viz-panel-section" data-viz-section="material">
+      <button type="button" class="viz-section-header" aria-expanded="true">
+        <span class="viz-section-arrow" aria-hidden="true">▾</span>
+        <span>Material</span>
+      </button>
+
+      <div class="viz-section-body">
+        <div class="section">
+          <div class="material-light-controls" data-visible-modes="unlit lambert pbr">
+            <div class="range-row">
+              <label>Light Intensity</label>
+              <span class="range-val" id="light-intensity-val">100%</span>
+            </div>
+            <input type="range" id="viz-light-intensity" min="0" max="300" value="100">
+          </div>
+
+          <div class="material-mode-list">
+            <label class="radio-label"><input type="radio" name="shading" value="unlit"> Unlit</label>
+            <label class="radio-label"><input type="radio" name="shading" value="lambert" checked> Lambert</label>
+            <label class="radio-label"><input type="radio" name="shading" value="pbr"> PBR</label>
+            <label class="radio-label"><input type="radio" name="shading" value="normal"> Normal Gradient</label>
+            <label class="radio-label"><input type="radio" name="shading" value="uv"> UV Grid</label>
+          </div>
+        </div>
+
+        <div class="section material-properties-section">
+          <div class="section-title">Material Properties</div>
+
+          <label class="checkbox-label material-smooth-row" data-visible-modes="lambert pbr normal">
+            <input type="checkbox" id="viz-smooth-shading" checked>
+            Smooth Shading
+          </label>
+
+          <div class="material-property material-property-color" data-visible-modes="unlit lambert pbr">
+            <div class="material-property-head">
+              <span>Color</span>
+              <span class="material-mode-badge">All modes</span>
+            </div>
+
+            <label class="radio-label"><input type="radio" name="viz-color-mode" value="texture" checked> Texture</label>
+            <label class="radio-label"><input type="radio" name="viz-color-mode" value="flat"> Flat Color</label>
+
+            <div class="material-row">
+              <label>Color</label>
+              <input type="color" id="viz-flat-color" value="#b3b3e6">
+            </div>
+
+            <div class="material-row material-row-file">
+              <label>Texture</label>
+              <input type="file" id="mat-map" accept="image/*">
+              <button type="button" class="btn btn-mini" data-clear-texture="map" title="Clear color texture">×</button>
+            </div>
+          </div>
+
+          <div class="material-property" data-visible-modes="lambert pbr normal">
+            <div class="material-property-head">
+              <span>Normal</span>
+              <span class="material-mode-badge">Lambert / PBR / Normal</span>
+            </div>
+
+            <label class="checkbox-label"><input type="checkbox" id="viz-normalmap" checked> Use Normal Map</label>
+
+            <div class="material-row material-row-file">
+              <label>Map</label>
+              <input type="file" id="mat-normal-map" accept="image/*">
+              <button type="button" class="btn btn-mini" data-clear-texture="normalMap" title="Clear normal map">×</button>
+            </div>
+
+            <div class="range-row material-range-row">
+              <label>Strength</label>
+              <span class="range-val" id="mat-normal-strength-val">1.00</span>
+            </div>
+            <input type="range" id="mat-normal-strength" min="0" max="3" step="0.01" value="1">
+          </div>
+
+          <div class="material-property" data-visible-modes="pbr">
+            <div class="material-property-head">
+              <span>Roughness</span>
+              <span class="material-mode-badge">PBR</span>
+            </div>
+
+            <div class="material-row material-row-file">
+              <label>Map</label>
+              <input type="file" id="mat-roughness-map" accept="image/*">
+              <button type="button" class="btn btn-mini" data-clear-texture="roughnessMap" title="Clear roughness map">×</button>
+            </div>
+
+            <div class="material-scalar-control" data-map-slot="roughnessMap">
+              <div class="range-row material-range-row">
+                <label>Value</label>
+                <span class="range-val" id="mat-roughness-val">0.40</span>
+              </div>
+              <input type="range" id="mat-roughness" min="0" max="1" step="0.01" value="0.4">
+            </div>
+            <div class="material-map-note is-hidden" data-map-note="roughnessMap">Value is driven by the active roughness map.</div>
+          </div>
+
+          <div class="material-property" data-visible-modes="pbr">
+            <div class="material-property-head">
+              <span>Metalness</span>
+              <span class="material-mode-badge">PBR</span>
+            </div>
+
+            <div class="material-row material-row-file">
+              <label>Map</label>
+              <input type="file" id="mat-metalness-map" accept="image/*">
+              <button type="button" class="btn btn-mini" data-clear-texture="metalnessMap" title="Clear metalness map">×</button>
+            </div>
+
+            <div class="material-scalar-control" data-map-slot="metalnessMap">
+              <div class="range-row material-range-row">
+                <label>Value</label>
+                <span class="range-val" id="mat-metalness-val">0.10</span>
+              </div>
+              <input type="range" id="mat-metalness" min="0" max="1" step="0.01" value="0.1">
+            </div>
+            <div class="material-map-note is-hidden" data-map-note="metalnessMap">Value is driven by the active metalness map.</div>
+          </div>
+
+          <div class="material-property" data-visible-modes="pbr">
+            <div class="material-property-head">
+              <span>AO</span>
+              <span class="material-mode-badge">PBR</span>
+            </div>
+
+            <div class="material-row material-row-file">
+              <label>Map</label>
+              <input type="file" id="mat-ao-map" accept="image/*">
+              <button type="button" class="btn btn-mini" data-clear-texture="aoMap" title="Clear AO map">×</button>
+            </div>
+
+            <div class="range-row material-range-row">
+              <label>Intensity</label>
+              <span class="range-val" id="mat-ao-intensity-val">1.00</span>
+            </div>
+            <input type="range" id="mat-ao-intensity" min="0" max="3" step="0.01" value="1">
+          </div>
+
+          <div class="material-property" data-visible-modes="pbr">
+            <div class="material-property-head">
+              <span>Emissive</span>
+              <span class="material-mode-badge">PBR</span>
+            </div>
+
+            <div class="material-row">
+              <label>Color</label>
+              <input type="color" id="mat-emissive-color" value="#ffffff">
+            </div>
+
+            <div class="material-row material-row-file">
+              <label>Map</label>
+              <input type="file" id="mat-emissive-map" accept="image/*">
+              <button type="button" class="btn btn-mini" data-clear-texture="emissiveMap" title="Clear emissive map">×</button>
+            </div>
+
+            <div class="range-row material-range-row">
+              <label>Intensity</label>
+              <span class="range-val" id="mat-emissive-intensity-val">0.00</span>
+            </div>
+            <input type="range" id="mat-emissive-intensity" min="0" max="10" step="0.01" value="0">
+          </div>
+
+          <label>Mesh Opacity</label>
+          <span class="range-val" id="opacity-val">100%</span>
+          <input type="range" id="viz-opacity" min="0" max="100" value="100">
+        </div>
+      </div>
+    </div>
+
+    <div class="viz-panel-section" data-viz-section="display">
+      <button type="button" class="viz-section-header" aria-expanded="true">
+        <span class="viz-section-arrow" aria-hidden="true">▾</span>
+        <span>Display</span>
+      </button>
+
+      <div class="viz-section-body">
+        <div class="section">
+          <label class="checkbox-label"><input type="checkbox" id="viz-wireframe"> Wireframe</label>
+          <label class="checkbox-label"><input type="checkbox" id="viz-normals"> Show Vertex Normals</label>
+          <label class="checkbox-label"><input type="checkbox" id="geo-vertices"> Show Vertices</label>
+          <label class="checkbox-label"><input type="checkbox" id="geo-edges"> Show Edges</label>
+          <label class="checkbox-label"><input type="checkbox" id="geo-faces"> Show Face Centers</label>
+
+          <label class="checkbox-label"><input type="checkbox" id="viz-cull"> Backface Culling</label>
+          <label class="checkbox-label"><input type="checkbox" id="viz-bbox"> Show Bounding Box</label>
+          <label class="checkbox-label"><input type="checkbox" id="viz-grid"> Show Grid</label>
+          <label class="checkbox-label"><input type="checkbox" id="viz-env-bg"> Show Environment Background</label>
+
+          <div class="env-bg-controls is-hidden" id="viz-env-bg-controls">
+            <div class="material-row material-row-file">
+              <label>Texture</label>
+              <input type="file" id="viz-env-file" accept=".hdr,.exr,image/vnd.radiance,image/x-exr">
+              <button type="button" class="btn btn-mini" id="viz-env-reset" title="Reset to default studio HDR">×</button>
+            </div>
+
+            <div class="range-row material-range-row">
+              <label>Blurriness</label>
+              <span class="range-val" id="viz-env-blur-val">0.30</span>
+            </div>
+            <input type="range" id="viz-env-blur" min="0" max="1" step="0.01" value="0.3">
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="viz-panel-section" data-viz-section="camera">
+      <button type="button" class="viz-section-header" aria-expanded="true">
+        <span class="viz-section-arrow" aria-hidden="true">▾</span>
+        <span>Camera</span>
+      </button>
+
+      <div class="viz-section-body">
+        <div class="section">
+          <label style="font-size:0.73rem;">Camera Controls</label>
+          <select id="viz-controls-mode" style="width:100%;margin-top:6px;">
+            <option value="arcball" selected>Rounded Arcball</option>
+            <option value="orbit">Orbit Controls</option>
+          </select>
+        </div>
+      </div>
+    </div>
+
+  </div>
+
+    <script type="module" src="/src/main.js"></script>
+  </body>
+</html>
+
+
+
+

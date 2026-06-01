@@ -1,0 +1,37 @@
+/* Mesh Segmentation task */
+
+.mesh-seg-region-list {
+  max-height: 280px;
+}
+
+.mesh-seg-region-row {
+  grid-template-columns: auto auto auto minmax(64px, 1fr) auto auto;
+}
+
+.mesh-seg-region-color {
+  width: 28px;
+  height: 24px;
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  padding: 0;
+}
+
+.mesh-seg-region-name {
+  min-width: 0;
+}
+
+.mesh-seg-cursor-indicator {
+  border-color: var(--gold);
+  background: color-mix(in srgb, var(--gold-dim) 35%, transparent);
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.35), 0 0 12px var(--gold-dim);
+}
+
+.mesh-seg-cursor-indicator.is-remove {
+  border-color: var(--danger);
+  background: color-mix(in srgb, var(--danger) 14%, transparent);
+}
+
+.mesh-seg-cursor-indicator.is-component span {
+  color: var(--gold);
+}

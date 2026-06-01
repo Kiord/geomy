@@ -1,0 +1,192 @@
+/* ── LAYOUT: Grid ── */
+body {
+  display: grid;
+  grid-template-columns: 280px 1fr 280px;
+  grid-template-rows: 46px 1fr;
+  grid-template-areas:
+    "topbar topbar topbar"
+    "taskpanel viewport vizpanel";
+}
+
+/* Top Bar */
+#topbar {
+  grid-area: topbar;
+  background: var(--panel-bg);
+  border-bottom: 2px solid var(--text);
+  box-shadow: var(--shadow-panel);
+  display: flex;
+  align-items: center;
+  padding: 0 1rem;
+  gap: 1rem;
+  z-index: 20;
+}
+#topbar .logo {
+  font-weight: 700;
+  font-size: 1.05rem;
+  color: var(--text);
+  letter-spacing: 0.01em;
+}
+#topbar .sep {
+  color: var(--text-muted);
+  user-select: none;
+}
+#topbar select {
+  background: var(--bg-soft);
+  color: var(--text);
+  border: 1px solid var(--border);
+  padding: 0.35rem 0.6rem;
+  border-radius: 0;
+  box-shadow: var(--shadow-button);
+  font-size: 0.85rem;
+  cursor: pointer;
+  outline: none;
+}
+#topbar select:focus {
+  border-color: var(--text);
+}
+#topbar .spacer { flex: 1; }
+#topbar #vertex-count {
+  font-size: 0.78rem;
+  color: var(--text-dim);
+}
+
+/* Theme toggle */
+#theme-toggle {
+  background: var(--panel-bg);
+  border: 1px solid var(--text);
+  color: var(--text);
+  font-size: 1rem;
+  padding: 0.35rem 0.6rem;
+  border-radius: 0;
+  box-shadow: var(--shadow-button);
+  cursor: pointer;
+  transition: background 0.2s;
+}
+#theme-toggle:hover { background: var(--hover); color: var(--link-hover); }
+#theme-toggle:active { transform: translate(1px, 1px); box-shadow: var(--shadow-button-active); }
+
+/* Task Panel (left) */
+#task-panel {
+  grid-area: taskpanel;
+  background: var(--panel-bg);
+  border-right: 1px solid var(--border);
+  box-shadow: var(--shadow-panel);
+  padding: 1rem;
+  overflow-y: auto;
+  z-index: 10;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+#task-panel h3 {
+  font-size: 0.85rem;
+  text-transform: uppercase;
+  letter-spacing: 1.5px;
+  color: var(--text-dim);
+  margin: 0 0 2px 0;
+}
+#task-panel .hint {
+  font-size: 0.73rem;
+  color: var(--text-dim);
+  line-height: 1.5;
+  margin-top: -4px;
+}
+
+/* Drop overlay */
+#drop-overlay {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
+  z-index: 15;
+}
+#drop-message {
+  color: var(--text);
+  font-size: 1.4rem;
+  background: var(--drop-bg);
+  padding: 22px 44px;
+  border-radius: 0;
+  box-shadow: var(--shadow-panel);
+  pointer-events: auto;
+  cursor: pointer;
+  text-align: center;
+  border: 2px dashed var(--drop-border);
+  transition: border-color 0.2s;
+}
+#drop-message:hover {
+  border-color: var(--text);
+}
+#drop-message small {
+  font-size: 0.8rem;
+  color: var(--text-dim);
+}
+#file-input { display: none; }
+
+/* Visualization Panel (right) */
+#viz-panel {
+  grid-area: vizpanel;
+  background: var(--panel-bg);
+  border-left: 1px solid var(--border);
+  box-shadow: var(--shadow-panel);
+  padding: 1rem;
+  overflow-y: auto;
+  z-index: 10;
+  font-size: 0.82rem;
+}
+#viz-panel h3 {
+  font-size: 0.85rem;
+  text-transform: uppercase;
+  letter-spacing: 1.5px;
+  color: var(--text-dim);
+  margin: 0 0 10px 0;
+}
+#viz-panel .section {
+  margin-bottom: 14px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--border);
+}
+#viz-panel .section:last-child { border-bottom: none; }
+
+
+#viewport {
+  grid-area: viewport;
+  position: relative;
+  background:
+    linear-gradient(to bottom, rgba(255, 255, 255, 0.35), rgba(255, 255, 255, 0.15)),
+    var(--bg);
+  z-index: 5;
+  min-width: 200px;
+  min-height: 200px;
+  overflow: hidden;
+}
+
+#viewport canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+#fps-counter {
+  position: absolute;
+  top: 10px;
+  left: 10px;
+  z-index: 30;
+  pointer-events: none;
+
+  padding: 4px 7px;
+  border-radius: 0;
+  border: 1px solid var(--border);
+  box-shadow: var(--shadow-button);
+
+  background: var(--panel-bg-focus);
+  color: var(--text);
+
+  font-family: var(--font-family);
+  font-size: 0.72rem;
+  line-height: 1;
+  letter-spacing: 0.02em;
+
+  user-select: none;
+}
