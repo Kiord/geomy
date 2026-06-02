@@ -9,7 +9,7 @@
   A 3D mesh toolbox in your browser
 </p>
 
-### Geomy is live [here](geomy.gker.fr)
+### Geomy is live [here](https://geomy.gker.fr)
 
 ### Implemented tasks
 - 3D inspection
