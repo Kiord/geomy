@@ -961,15 +961,16 @@ function maskArrayExportEntries(mask, meshes) {
   return entries;
 }
 
-function exportNPZ() {
+function exportArrayBundle(extension = 'npz') {
   const meshes = getCurrentMeshes();
   if (!meshes.length) return alert('No mesh loaded.');
   const activeMask = getActiveMask();
-  downloadArrayBundle(maskArrayExportEntries(activeMask, meshes), `mesh-mask-${safeFilename(maskName(activeMask, activeMaskIndex))}.npz`);
+  const ext = extension === 'zip' ? 'zip' : 'npz';
+  downloadArrayBundle(maskArrayExportEntries(activeMask, meshes), `mesh-mask-${safeFilename(maskName(activeMask, activeMaskIndex))}.${ext}`);
 }
 
 function exportByFormat(format) {
-  if (format === 'npz') exportNPZ();
+  if (format === 'npz' || format === 'zip') exportArrayBundle(format);
   else exportJSON();
 }
 
@@ -1624,8 +1625,9 @@ function renderPanel() {
     <div class="material-row mesh-mask-io-row">
       <label>Format</label>
       <select id="mesh-mask-io-format">
+        <option value="npz">Numpy (NPZ)</option>
+        <option value="zip">Numpy (ZIP)</option>
         <option value="json">JSON</option>
-        <option value="npz">NPZ</option>
       </select>
       <span></span>
     </div>

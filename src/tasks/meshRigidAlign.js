@@ -4,6 +4,9 @@ import { OBJLoader } from 'three/examples/jsm/loaders/OBJLoader.js';
 import { STLLoader } from 'three/examples/jsm/loaders/STLLoader.js';
 import { PLYLoader } from 'three/examples/jsm/loaders/PLYLoader.js';
 import { OBJExporter } from 'three/examples/jsm/exporters/OBJExporter.js';
+import { PLYExporter } from 'three/examples/jsm/exporters/PLYExporter.js';
+import { STLExporter } from 'three/examples/jsm/exporters/STLExporter.js';
+import { GLTFExporter } from 'three/examples/jsm/exporters/GLTFExporter.js';
 import { mergeVertices } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import { MeshBVH } from 'three-mesh-bvh';
 
@@ -18,7 +21,7 @@ import {
 } from '../landmarks/landmarkVisuals.js';
 import { GEOMY_VERSION } from '../version.js';
 import { downloadBlob } from '../util.js';
-import { downloadArrayBundle, downloadNpy, jsonEntry, npyEntry, parseBundleArrays, readArrayBundle } from '../io/numpyBundle.js';
+import { downloadNpy, parseBundleArrays, readArrayBundle } from '../io/numpyBundle.js';
 import {
   MeshComponentIndex,
   TemporaryVisualizationState,
@@ -256,6 +259,13 @@ function makeTaskMaterial(side) {
 function getMaterialList(material) {
   if (!material) return [];
   return Array.isArray(material) ? material : [material];
+}
+
+function cloneMaterialOrArray(material) {
+  if (!material) return material;
+  return Array.isArray(material)
+    ? material.map(mat => mat?.clone?.() || mat)
+    : material.clone?.() || material;
 }
 
 function disposeMaterialOrArray(material) {
@@ -872,9 +882,14 @@ function applySideMaterials(side) {
     updateMeshColors(mesh, side);
 
     const current = mesh.material;
+    if (!mesh.userData.geomyRigidOriginalMaterial) {
+      mesh.userData.geomyRigidOriginalMaterial = cloneMaterialOrArray(current);
+    } else {
+      disposeMaterialOrArray(current);
+    }
+
     mesh.material = makeTaskMaterial(side);
     mesh.renderOrder = side === 'source' ? 20 : 10;
-    disposeMaterialOrArray(current);
   });
 
   applyTaskDisplaySettings();
@@ -3160,47 +3175,91 @@ function exportLandmarksForSide(side) {
 }
 
 
-function rootWorldVertices(root) {
-  const values = [];
-  root?.updateMatrixWorld?.(true);
-  root?.traverse?.(mesh => {
-    if (!mesh.isMesh || !mesh.geometry?.attributes?.position) return;
-    const pos = mesh.geometry.attributes.position;
-    const v = new THREE.Vector3();
-    mesh.updateMatrixWorld?.(true);
-    for (let i = 0; i < pos.count; i++) {
-      v.fromBufferAttribute(pos, i).applyMatrix4(mesh.matrixWorld);
-      values.push(v.x, v.y, v.z);
-    }
-  });
-  return new Float32Array(values);
-}
-
-function exportTransformNPY() {
-  if (!sourceObject) return;
+function exportTransformNpy() {
   const matrix = sourceAssetToTargetAssetMatrix();
   if (!matrix) return alert('Load source and target meshes before exporting the transform.');
-  downloadNpy(new Float32Array(matrix.toArray()), [4, 4], 'float32', 'rigid-align-transform.npy');
+
+  downloadNpy(
+    new Float32Array(matrix.toArray()),
+    [4, 4],
+    'float32',
+    'rigid-align-source-to-target.npy'
+  );
 }
 
 function exportTransformByFormat(format) {
-  if (format === 'npy') exportTransformNPY();
+  if (format === 'npy') exportTransformNpy();
   else exportTransformJSON();
 }
 
-function exportTransformedSourceOBJ() {
-  if (!sourceObject) return alert('Load a source mesh first.');
-  const name = sourceFileName ? sourceFileName.replace(/\.[^.]+$/, '') : 'source-mesh';
-  const clone = sourceObject.clone(true);
-  clone.updateMatrixWorld(true);
-  const text = new OBJExporter().parse(clone);
-  downloadBlob(text, `rigid-align-${safeFilename(name)}-transformed.obj`, 'text/plain');
+function restoreOriginalMaterialsForExport(root) {
+  root?.traverse?.(mesh => {
+    if (!mesh.isMesh) return;
+    const original = mesh.userData?.geomyRigidOriginalMaterial;
+    if (!original) return;
+    mesh.material = cloneMaterialOrArray(original);
+  });
 }
 
-function exportTransformedSourceVerticesNPY() {
+function cloneTransformedSourceForExport() {
+  if (!sourceObject) return null;
+
+  const sourceToTarget = sourceAssetToTargetAssetMatrix();
+  if (!sourceToTarget) return null;
+
+  const clone = sourceObject.clone(true);
+  restoreOriginalMaterialsForExport(clone);
+  setRootMatrix(clone, sourceToTarget);
+  clone.updateMatrixWorld(true);
+  return clone;
+}
+
+function exportTransformedSourceMesh(format = 'obj') {
   if (!sourceObject) return alert('Load a source mesh first.');
-  const vertices = rootWorldVertices(sourceObject);
-  downloadNpy(vertices, [vertices.length / 3, 3], 'float32', 'rigid-align-source-transformed-vertices.npy');
+  const name = sourceFileName ? sourceFileName.replace(/\.[^.]+$/, '') : 'source-mesh';
+  const clone = cloneTransformedSourceForExport();
+  if (!clone) return alert('Load source and target meshes before exporting the aligned source.');
+
+  const base = `rigid-align-${safeFilename(name)}-transformed`;
+  const exporterFormat = String(format || 'glb').toLowerCase();
+
+  if (exporterFormat === 'glb' || exporterFormat === 'gltf') {
+    const exporter = new GLTFExporter();
+    exporter.parse(
+      clone,
+      result => {
+        if (result instanceof ArrayBuffer) {
+          downloadBlob(result, `${base}.glb`, 'model/gltf-binary');
+        } else {
+          downloadBlob(JSON.stringify(result, null, 2), `${base}.gltf`, 'model/gltf+json');
+        }
+      },
+      error => {
+        console.error('Failed to export aligned source mesh:', error);
+        alert(error?.message || 'Failed to export aligned source mesh.');
+      },
+      { binary: exporterFormat === 'glb' }
+    );
+    return;
+  }
+
+  if (exporterFormat === 'ply') {
+    const exporter = new PLYExporter();
+    exporter.parse(clone, result => {
+      const blobType = result instanceof ArrayBuffer ? 'application/octet-stream' : 'text/plain';
+      downloadBlob(result, `${base}.ply`, blobType);
+    }, { binary: false });
+    return;
+  }
+
+  if (exporterFormat === 'stl') {
+    const result = new STLExporter().parse(clone, { binary: false });
+    downloadBlob(result, `${base}.stl`, 'model/stl');
+    return;
+  }
+
+  const text = new OBJExporter().parse(clone);
+  downloadBlob(text, `${base}.obj`, 'text/plain');
 }
 
 function sessionExportPayload() {
@@ -3213,28 +3272,6 @@ function sessionExportPayload() {
     snapshot: makeSnapshot(),
   };
 }
-
-function exportSessionNPZ() {
-  const matrix = sourceAssetToTargetAssetMatrix();
-  const entries = [
-    jsonEntry('session.json', sessionExportPayload()),
-  ];
-  if (matrix) entries.push(npyEntry('source_to_target.npy', new Float32Array(matrix.toArray()), [4, 4], 'float32'));
-  downloadArrayBundle(entries, 'rigid-align-session.npz');
-}
-
-function exportSessionByFormat(format) {
-  if (format === 'npz') exportSessionNPZ();
-  else exportSessionJSON();
-}
-
-async function importSessionBundle(file) {
-  const entries = await readArrayBundle(file);
-  const jsonBytes = entries.get('session.json') || entries.get('metadata.json');
-  if (!jsonBytes) throw new Error('Session bundle needs session.json.');
-  return JSON.parse(new TextDecoder().decode(jsonBytes));
-}
-
 
 function transformExportPayload() {
   return {
@@ -3277,18 +3314,15 @@ async function importSessionFile(file) {
   if (!file) return;
 
   try {
-    const isBundle = /\.(npz|zip)$/i.test(file.name || '');
-    const payload = isBundle
-      ? await importSessionBundle(file)
-      : await new Promise((resolve, reject) => {
-          const reader = new FileReader();
-          reader.onload = () => {
-            try { resolve(JSON.parse(String(reader.result || ''))); }
-            catch (error) { reject(error); }
-          };
-          reader.onerror = () => reject(new Error('Failed to read the rigid alignment session file.'));
-          reader.readAsText(file);
-        });
+    const payload = await new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => {
+        try { resolve(JSON.parse(String(reader.result || ''))); }
+        catch (error) { reject(error); }
+      };
+      reader.onerror = () => reject(new Error('Failed to read the rigid alignment session file.'));
+      reader.readAsText(file);
+    });
 
     const snapshot = payload.snapshot || payload;
     restoreSnapshot(snapshot);
@@ -3612,25 +3646,27 @@ function renderPanel() {
     <div class="material-row" style="margin-top:6px;">
       <label>Transform</label>
       <select id="mesh-rigid-transform-format">
+        <option value="npy">Numpy (.npy)</option>
         <option value="json">JSON</option>
-        <option value="npy">NPY</option>
       </select>
       <button class="btn btn-mini" id="mesh-rigid-export-transform">Export</button>
     </div>
     <div class="material-row" style="margin-top:6px;">
-      <label>Session</label>
-      <select id="mesh-rigid-session-format">
-        <option value="json">JSON</option>
-        <option value="npz">NPZ</option>
+      <label>Source</label>
+      <select id="mesh-rigid-source-format">
+        <option value="glb">GLB</option>
+        <option value="gltf">GLTF</option>
+        <option value="obj">OBJ</option>
+        <option value="ply">PLY</option>
+        <option value="stl">STL</option>
       </select>
-      <button class="btn btn-mini" id="mesh-rigid-export-session">Save</button>
+      <button class="btn btn-mini" id="mesh-rigid-export-source">Export</button>
     </div>
-    <div class="mesh-rigid-compact-actions" style="margin-top:6px;">
-      <button class="btn btn-mini" id="mesh-rigid-export-source-obj">Source OBJ</button>
-      <button class="btn btn-mini" id="mesh-rigid-export-source-vertices">Source Verts NPY</button>
+    <div class="btn-row" style="margin-top:6px;">
+      <button class="btn" id="mesh-rigid-export-session">Save Session</button>
+      <button class="btn" id="mesh-rigid-import-session">Load Session</button>
     </div>
-    <button class="btn btn-full" id="mesh-rigid-import-session">Load Session</button>
-    <input type="file" id="mesh-rigid-import-file" class="mesh-rigid-file-input" accept="application/json,.json,.npz,.zip,application/zip">
+    <input type="file" id="mesh-rigid-import-file" class="mesh-rigid-file-input" accept="application/json,.json">
   `;
 
   bindPanelEvents();
@@ -3710,10 +3746,9 @@ function bindPanelEvents() {
   document.getElementById('mesh-rigid-align')?.addEventListener('click', alignSource);
   document.getElementById('mesh-rigid-reset-source')?.addEventListener('click', resetSourceTransform);
   document.getElementById('mesh-rigid-reset-target')?.addEventListener('click', resetTargetTransform);
-  document.getElementById('mesh-rigid-export-transform')?.addEventListener('click', () => exportTransformByFormat(document.getElementById('mesh-rigid-transform-format')?.value || 'json'));
-  document.getElementById('mesh-rigid-export-session')?.addEventListener('click', () => exportSessionByFormat(document.getElementById('mesh-rigid-session-format')?.value || 'json'));
-  document.getElementById('mesh-rigid-export-source-obj')?.addEventListener('click', exportTransformedSourceOBJ);
-  document.getElementById('mesh-rigid-export-source-vertices')?.addEventListener('click', exportTransformedSourceVerticesNPY);
+  document.getElementById('mesh-rigid-export-transform')?.addEventListener('click', () => exportTransformByFormat(document.getElementById('mesh-rigid-transform-format')?.value || 'npy'));
+  document.getElementById('mesh-rigid-export-session')?.addEventListener('click', exportSessionJSON);
+  document.getElementById('mesh-rigid-export-source')?.addEventListener('click', () => exportTransformedSourceMesh(document.getElementById('mesh-rigid-source-format')?.value || 'glb'));
   document.getElementById('mesh-rigid-import-session')?.addEventListener('click', () => document.getElementById('mesh-rigid-import-file')?.click());
   document.getElementById('mesh-rigid-import-file')?.addEventListener('change', event => importSessionFile(event.target.files?.[0]));
   updateInteractionButtons();

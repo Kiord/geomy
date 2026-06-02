@@ -1503,13 +1503,14 @@ function landmarkArrayExportEntries() {
   ];
 }
 
-function exportLandmarksNPZ() {
+function exportLandmarksArrayBundle(extension = 'npz') {
   if (!landmarks.length) return alert('No landmarks.');
-  downloadArrayBundle(landmarkArrayExportEntries(), 'landmarks.npz');
+  const ext = extension === 'zip' ? 'zip' : 'npz';
+  downloadArrayBundle(landmarkArrayExportEntries(), `landmarks.${ext}`);
 }
 
 function exportLandmarksByFormat(format) {
-  if (format === 'npz') exportLandmarksNPZ();
+  if (format === 'npz' || format === 'zip') exportLandmarksArrayBundle(format);
   else exportJSON();
 }
 
@@ -1755,8 +1756,9 @@ function renderPanel() {
     <div class="material-row landmark-io-row">
       <label>Format</label>
       <select id="landmark-io-format">
+        <option value="npz">Numpy (NPZ)</option>
+        <option value="zip">Numpy (ZIP)</option>
         <option value="json">JSON</option>
-        <option value="npz">NPZ</option>
       </select>
       <span></span>
     </div>

@@ -1059,14 +1059,15 @@ function segmentationArrayExportEntries(currentMeshes) {
   return entries;
 }
 
-function exportNPZ() {
+function exportArrayBundle(extension = 'npz') {
   const currentMeshes = meshes();
   if (!currentMeshes.length) return alert('No mesh loaded.');
-  downloadArrayBundle(segmentationArrayExportEntries(currentMeshes), 'mesh-segmentation.npz');
+  const ext = extension === 'zip' ? 'zip' : 'npz';
+  downloadArrayBundle(segmentationArrayExportEntries(currentMeshes), `mesh-segmentation.${ext}`);
 }
 
 function exportByFormat(format) {
-  if (format === 'npz') exportNPZ();
+  if (format === 'npz' || format === 'zip') exportArrayBundle(format);
   else exportJSON();
 }
 
@@ -1364,8 +1365,9 @@ function renderPanel() {
     <div class="material-row mesh-mask-io-row">
       <label>Format</label>
       <select id="mesh-seg-io-format">
+        <option value="npz">Numpy (NPZ)</option>
+        <option value="zip">Numpy (ZIP)</option>
         <option value="json">JSON</option>
-        <option value="npz">NPZ</option>
       </select>
       <span></span>
     </div>
