@@ -3192,12 +3192,24 @@ function exportTransformByFormat(format) {
   else exportTransformJSON();
 }
 
-function restoreOriginalMaterialsForExport(root) {
-  root?.traverse?.(mesh => {
+function restoreOriginalMaterialsForExport(cloneRoot, originalRoot) {
+  const originalMeshes = [];
+  originalRoot?.traverse?.(mesh => {
+    if (mesh.isMesh) originalMeshes.push(mesh);
+  });
+
+  let meshIndex = 0;
+  cloneRoot?.traverse?.(mesh => {
     if (!mesh.isMesh) return;
-    const original = mesh.userData?.geomyRigidOriginalMaterial;
-    if (!original) return;
-    mesh.material = cloneMaterialOrArray(original);
+
+    const originalMesh = originalMeshes[meshIndex++];
+    const originalMaterial = originalMesh?.userData?.geomyRigidOriginalMaterial || originalMesh?.material;
+    if (!originalMaterial) return;
+
+    mesh.material = cloneMaterialOrArray(originalMaterial);
+    // Object3D.clone serializes userData through JSON, which turns stored
+    // Material/Color instances into plain objects. Do not let exporters see those.
+    delete mesh.userData.geomyRigidOriginalMaterial;
   });
 }
 
@@ -3208,7 +3220,7 @@ function cloneTransformedSourceForExport() {
   if (!sourceToTarget) return null;
 
   const clone = sourceObject.clone(true);
-  restoreOriginalMaterialsForExport(clone);
+  restoreOriginalMaterialsForExport(clone, sourceObject);
   setRootMatrix(clone, sourceToTarget);
   clone.updateMatrixWorld(true);
   return clone;
