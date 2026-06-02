@@ -123,13 +123,6 @@ body {
 ::selection { background: var(--accent); color: #fff; }
 
 
-
-.theme-icon-btn img {
-  width: 20px;
-  height: 20px;
-  display: block;
-}
-
 .theme-icon-btn {
   border: none;
   background: transparent;
@@ -139,10 +132,15 @@ body {
   cursor: pointer;
 }
 
-#theme-toggle:hover,
-#theme-toggle:focus,
-#theme-toggle:active {
+.theme-icon-btn img {
+  width: 20px;
+  height: 20px;
+  display: block;
+}
+
+#theme-toggle {
+  border: none !important;
   background: transparent !important;
-  border-color: transparent !important;
   box-shadow: none !important;
+  padding: 4px;
 }
