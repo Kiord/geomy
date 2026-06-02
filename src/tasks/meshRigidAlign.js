@@ -3,6 +3,7 @@ import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
 import { OBJLoader } from 'three/examples/jsm/loaders/OBJLoader.js';
 import { STLLoader } from 'three/examples/jsm/loaders/STLLoader.js';
 import { PLYLoader } from 'three/examples/jsm/loaders/PLYLoader.js';
+import { OBJExporter } from 'three/examples/jsm/exporters/OBJExporter.js';
 import { mergeVertices } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import { MeshBVH } from 'three-mesh-bvh';
 
@@ -17,6 +18,7 @@ import {
 } from '../landmarks/landmarkVisuals.js';
 import { GEOMY_VERSION } from '../version.js';
 import { downloadBlob } from '../util.js';
+import { downloadArrayBundle, downloadNpy, jsonEntry, npyEntry, parseBundleArrays, readArrayBundle } from '../io/numpyBundle.js';
 import {
   MeshComponentIndex,
   TemporaryVisualizationState,
@@ -3157,6 +3159,83 @@ function exportLandmarksForSide(side) {
   );
 }
 
+
+function rootWorldVertices(root) {
+  const values = [];
+  root?.updateMatrixWorld?.(true);
+  root?.traverse?.(mesh => {
+    if (!mesh.isMesh || !mesh.geometry?.attributes?.position) return;
+    const pos = mesh.geometry.attributes.position;
+    const v = new THREE.Vector3();
+    mesh.updateMatrixWorld?.(true);
+    for (let i = 0; i < pos.count; i++) {
+      v.fromBufferAttribute(pos, i).applyMatrix4(mesh.matrixWorld);
+      values.push(v.x, v.y, v.z);
+    }
+  });
+  return new Float32Array(values);
+}
+
+function exportTransformNPY() {
+  if (!sourceObject) return;
+  const matrix = sourceAssetToTargetAssetMatrix();
+  if (!matrix) return alert('Load source and target meshes before exporting the transform.');
+  downloadNpy(new Float32Array(matrix.toArray()), [4, 4], 'float32', 'rigid-align-transform.npy');
+}
+
+function exportTransformByFormat(format) {
+  if (format === 'npy') exportTransformNPY();
+  else exportTransformJSON();
+}
+
+function exportTransformedSourceOBJ() {
+  if (!sourceObject) return alert('Load a source mesh first.');
+  const name = sourceFileName ? sourceFileName.replace(/\.[^.]+$/, '') : 'source-mesh';
+  const clone = sourceObject.clone(true);
+  clone.updateMatrixWorld(true);
+  const text = new OBJExporter().parse(clone);
+  downloadBlob(text, `rigid-align-${safeFilename(name)}-transformed.obj`, 'text/plain');
+}
+
+function exportTransformedSourceVerticesNPY() {
+  if (!sourceObject) return alert('Load a source mesh first.');
+  const vertices = rootWorldVertices(sourceObject);
+  downloadNpy(vertices, [vertices.length / 3, 3], 'float32', 'rigid-align-source-transformed-vertices.npy');
+}
+
+function sessionExportPayload() {
+  return {
+    type: 'geomy.meshRigidAlign.session',
+    version: GEOMY_VERSION,
+    sourceFileName,
+    targetFileName,
+    createdAt: new Date().toISOString(),
+    snapshot: makeSnapshot(),
+  };
+}
+
+function exportSessionNPZ() {
+  const matrix = sourceAssetToTargetAssetMatrix();
+  const entries = [
+    jsonEntry('session.json', sessionExportPayload()),
+  ];
+  if (matrix) entries.push(npyEntry('source_to_target.npy', new Float32Array(matrix.toArray()), [4, 4], 'float32'));
+  downloadArrayBundle(entries, 'rigid-align-session.npz');
+}
+
+function exportSessionByFormat(format) {
+  if (format === 'npz') exportSessionNPZ();
+  else exportSessionJSON();
+}
+
+async function importSessionBundle(file) {
+  const entries = await readArrayBundle(file);
+  const jsonBytes = entries.get('session.json') || entries.get('metadata.json');
+  if (!jsonBytes) throw new Error('Session bundle needs session.json.');
+  return JSON.parse(new TextDecoder().decode(jsonBytes));
+}
+
+
 function transformExportPayload() {
   return {
     type: 'geomy.meshRigidAlign.transform',
@@ -3191,38 +3270,36 @@ function exportTransformJSON() {
 }
 
 function exportSessionJSON() {
-  const payload = {
-    type: 'geomy.meshRigidAlign.session',
-    version: GEOMY_VERSION,
-    sourceFileName,
-    targetFileName,
-    createdAt: new Date().toISOString(),
-    snapshot: makeSnapshot(),
-  };
-
-  downloadBlob(JSON.stringify(payload, null, 2), 'rigid-align-session.json', 'application/json');
+  downloadBlob(JSON.stringify(sessionExportPayload(), null, 2), 'rigid-align-session.json', 'application/json');
 }
 
-function importSessionFile(file) {
+async function importSessionFile(file) {
   if (!file) return;
 
-  const reader = new FileReader();
-  reader.onload = () => {
-    try {
-      const payload = JSON.parse(String(reader.result || ''));
-      const snapshot = payload.snapshot || payload;
-      restoreSnapshot(snapshot);
-      clearHistory();
-    } catch (error) {
-      console.error('Failed to import rigid alignment session:', error);
-      alert(error?.message || 'Failed to import rigid alignment session JSON.');
-    } finally {
-      const input = document.getElementById('mesh-rigid-import-file');
-      if (input) input.value = '';
-    }
-  };
-  reader.onerror = () => alert('Failed to read the rigid alignment JSON file.');
-  reader.readAsText(file);
+  try {
+    const isBundle = /\.(npz|zip)$/i.test(file.name || '');
+    const payload = isBundle
+      ? await importSessionBundle(file)
+      : await new Promise((resolve, reject) => {
+          const reader = new FileReader();
+          reader.onload = () => {
+            try { resolve(JSON.parse(String(reader.result || ''))); }
+            catch (error) { reject(error); }
+          };
+          reader.onerror = () => reject(new Error('Failed to read the rigid alignment session file.'));
+          reader.readAsText(file);
+        });
+
+    const snapshot = payload.snapshot || payload;
+    restoreSnapshot(snapshot);
+    clearHistory();
+  } catch (error) {
+    console.error('Failed to import rigid alignment session:', error);
+    alert(error?.message || 'Failed to import rigid alignment session.');
+  } finally {
+    const input = document.getElementById('mesh-rigid-import-file');
+    if (input) input.value = '';
+  }
 }
 
 function syncAlignmentOptionsFromPanel() {
@@ -3532,12 +3609,28 @@ function renderPanel() {
       <button class="btn" id="mesh-rigid-reset-source">Reset Source</button>
       <button class="btn" id="mesh-rigid-reset-target">Reset Target</button>
     </div>
-    <div class="btn-row" style="margin-top:6px;">
-      <button class="btn" id="mesh-rigid-export-transform">Export Transform</button>
-      <button class="btn" id="mesh-rigid-export-session">Save Session</button>
+    <div class="material-row" style="margin-top:6px;">
+      <label>Transform</label>
+      <select id="mesh-rigid-transform-format">
+        <option value="json">JSON</option>
+        <option value="npy">NPY</option>
+      </select>
+      <button class="btn btn-mini" id="mesh-rigid-export-transform">Export</button>
+    </div>
+    <div class="material-row" style="margin-top:6px;">
+      <label>Session</label>
+      <select id="mesh-rigid-session-format">
+        <option value="json">JSON</option>
+        <option value="npz">NPZ</option>
+      </select>
+      <button class="btn btn-mini" id="mesh-rigid-export-session">Save</button>
+    </div>
+    <div class="mesh-rigid-compact-actions" style="margin-top:6px;">
+      <button class="btn btn-mini" id="mesh-rigid-export-source-obj">Source OBJ</button>
+      <button class="btn btn-mini" id="mesh-rigid-export-source-vertices">Source Verts NPY</button>
     </div>
     <button class="btn btn-full" id="mesh-rigid-import-session">Load Session</button>
-    <input type="file" id="mesh-rigid-import-file" class="mesh-rigid-file-input" accept="application/json,.json">
+    <input type="file" id="mesh-rigid-import-file" class="mesh-rigid-file-input" accept="application/json,.json,.npz,.zip,application/zip">
   `;
 
   bindPanelEvents();
@@ -3617,8 +3710,10 @@ function bindPanelEvents() {
   document.getElementById('mesh-rigid-align')?.addEventListener('click', alignSource);
   document.getElementById('mesh-rigid-reset-source')?.addEventListener('click', resetSourceTransform);
   document.getElementById('mesh-rigid-reset-target')?.addEventListener('click', resetTargetTransform);
-  document.getElementById('mesh-rigid-export-transform')?.addEventListener('click', exportTransformJSON);
-  document.getElementById('mesh-rigid-export-session')?.addEventListener('click', exportSessionJSON);
+  document.getElementById('mesh-rigid-export-transform')?.addEventListener('click', () => exportTransformByFormat(document.getElementById('mesh-rigid-transform-format')?.value || 'json'));
+  document.getElementById('mesh-rigid-export-session')?.addEventListener('click', () => exportSessionByFormat(document.getElementById('mesh-rigid-session-format')?.value || 'json'));
+  document.getElementById('mesh-rigid-export-source-obj')?.addEventListener('click', exportTransformedSourceOBJ);
+  document.getElementById('mesh-rigid-export-source-vertices')?.addEventListener('click', exportTransformedSourceVerticesNPY);
   document.getElementById('mesh-rigid-import-session')?.addEventListener('click', () => document.getElementById('mesh-rigid-import-file')?.click());
   document.getElementById('mesh-rigid-import-file')?.addEventListener('change', event => importSessionFile(event.target.files?.[0]));
   updateInteractionButtons();

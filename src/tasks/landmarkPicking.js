@@ -14,6 +14,7 @@ import {
 } from '../landmarks/landmarkVisuals.js';
 import { GEOMY_VERSION } from '../version.js';
 import { raycast, downloadBlob } from '../util.js';
+import { downloadArrayBundle, jsonEntry, npyEntry, parseBundleArrays, readArrayBundle } from '../io/numpyBundle.js';
 import { rootLocalPointFromWorld, worldPointFromRootLocal } from './meshTaskUtils.js';
 import '../css/landmarkPicking.css';
 
@@ -1340,6 +1341,201 @@ function unbindViewportEvents() {
   resetCursorIndicator({ remove: true });
 }
 
+
+async function readLandmarkImportPayload(file) {
+  const lower = String(file?.name || '').toLowerCase();
+  if (lower.endsWith('.npz') || lower.endsWith('.zip')) {
+    const entries = await readArrayBundle(file);
+    const arrays = parseBundleArrays(entries);
+    return landmarkPayloadFromArrays(arrays);
+  }
+
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      try { resolve(JSON.parse(String(reader.result || ''))); }
+      catch (error) { reject(error); }
+    };
+    reader.onerror = () => reject(new Error(`Failed to read ${file?.name || 'landmark file'}.`));
+    reader.readAsText(file);
+  });
+}
+
+function arrayByName(arrays, name) {
+  return arrays.get(name) || arrays.get(`landmarks/${name}`) || arrays.get(name.replace(/^landmarks\//, ''));
+}
+
+function baryArrayValue(bary, row, col) {
+  return Number(bary?.data?.[row * 3 + col] ?? 0);
+}
+
+function simplexArrayValue(simplex, row, col) {
+  return Number(simplex?.data?.[row * 3 + col] ?? -1);
+}
+
+function landmarkPayloadFromArrays(arrays) {
+  const simplex = arrayByName(arrays, 'simplex.npy');
+  const bary = arrayByName(arrays, 'barycentric.npy');
+  const counts = arrayByName(arrays, 'simplex_vertex_count.npy');
+  const xyz = arrayByName(arrays, 'world_xyz.npy');
+  if (!simplex || !bary || !counts) throw new Error('Landmark bundle needs simplex.npy, barycentric.npy, and simplex_vertex_count.npy.');
+
+  const meshes = getCurrentMeshes();
+  if (!meshes.length) throw new Error('Load a mesh before importing landmark arrays.');
+  const mesh = meshes[0];
+  mesh.updateMatrixWorld?.(true);
+  const positionAttr = mesh.geometry?.attributes?.position;
+  if (!positionAttr) throw new Error('Current mesh has no vertex positions.');
+
+  const L = counts.shape?.[0] || 0;
+  const imported = [];
+  for (let i = 0; i < L; i++) {
+    const n = clamp(Number(counts.data[i]) || 0, 0, 3);
+    if (n < 1) continue;
+
+    const ids = [simplexArrayValue(simplex, i, 0), simplexArrayValue(simplex, i, 1), simplexArrayValue(simplex, i, 2)];
+    const weights = [baryArrayValue(bary, i, 0), baryArrayValue(bary, i, 1), baryArrayValue(bary, i, 2)];
+    if (ids.slice(0, n).some(id => !Number.isInteger(id) || id < 0 || id >= positionAttr.count)) continue;
+
+    let position = null;
+    const v0 = vertexWorldPosition(mesh, ids[0]);
+    if (n === 1) {
+      position = v0;
+    } else {
+      position = new THREE.Vector3();
+      for (let k = 0; k < n; k++) {
+        const v = vertexWorldPosition(mesh, ids[k]);
+        if (v) position.add(v.multiplyScalar(Number.isFinite(weights[k]) ? weights[k] : (k === 0 ? 1 : 0)));
+      }
+    }
+
+    if (!position && xyz?.data?.length >= (i + 1) * 3) {
+      position = new THREE.Vector3(xyz.data[i * 3], xyz.data[i * 3 + 1], xyz.data[i * 3 + 2]);
+    }
+    if (!position) continue;
+
+    const snap = n === 1
+      ? { type: 'vertex', meshUuid: mesh.uuid, meshName: getMeshLabel(mesh), vertexIndex: ids[0] }
+      : {
+          type: n === 2 ? 'edge' : 'triangle',
+          meshUuid: mesh.uuid,
+          meshName: getMeshLabel(mesh),
+          vertexIndices: ids.slice(0, n),
+          barycentric: n === 2
+            ? { a: weights[0], b: weights[1] }
+            : { a: weights[0], b: weights[1], c: weights[2] },
+          t: n === 2 ? weights[1] : undefined,
+        };
+
+    imported.push({
+      index: i,
+      id: i + 1,
+      name: `Landmark ${i + 1}`,
+      snapMode: snap.type,
+      worldPosition: { x: position.x, y: position.y, z: position.z },
+      snap,
+    });
+  }
+
+  return {
+    format: 'geomy-landmarks',
+    version: GEOMY_VERSION,
+    coordinateSpaces: { absolute: 'world' },
+    landmarks: imported,
+  };
+}
+
+function landmarkArrayExportEntries() {
+  const L = landmarks.length;
+  const simplex = new Int32Array(L * 3);
+  const bary = new Float32Array(L * 3);
+  const counts = new Int32Array(L);
+  const xyz = new Float32Array(L * 3);
+  simplex.fill(-1);
+
+  landmarks.forEach((landmark, i) => {
+    const binding = landmark.binding || {};
+    const type = binding.snapMode || landmark.snapMode;
+    const pos = landmark.position || new THREE.Vector3();
+    xyz[i * 3] = pos.x;
+    xyz[i * 3 + 1] = pos.y;
+    xyz[i * 3 + 2] = pos.z;
+
+    if (type === 'vertex' && Number.isInteger(binding.vertexIndex)) {
+      counts[i] = 1;
+      simplex[i * 3] = binding.vertexIndex;
+      bary[i * 3] = 1;
+    } else if (type === 'edge' && Array.isArray(binding.vertexIndices) && binding.vertexIndices.length >= 2) {
+      const t = Number.isFinite(Number(binding.t)) ? Number(binding.t) : Number(binding.barycentric?.b ?? 0);
+      counts[i] = 2;
+      simplex[i * 3] = Number(binding.vertexIndices[0]) || 0;
+      simplex[i * 3 + 1] = Number(binding.vertexIndices[1]) || 0;
+      bary[i * 3] = 1 - t;
+      bary[i * 3 + 1] = t;
+    } else if (type === 'triangle' && Array.isArray(binding.vertexIndices) && binding.vertexIndices.length >= 3) {
+      counts[i] = 3;
+      simplex[i * 3] = Number(binding.vertexIndices[0]) || 0;
+      simplex[i * 3 + 1] = Number(binding.vertexIndices[1]) || 0;
+      simplex[i * 3 + 2] = Number(binding.vertexIndices[2]) || 0;
+      bary[i * 3] = Number(binding.barycentric?.a ?? 0);
+      bary[i * 3 + 1] = Number(binding.barycentric?.b ?? 0);
+      bary[i * 3 + 2] = Number(binding.barycentric?.c ?? 0);
+    } else {
+      counts[i] = 0;
+    }
+  });
+
+  return [
+    npyEntry('simplex.npy', simplex, [L, 3], 'int32'),
+    npyEntry('barycentric.npy', bary, [L, 3], 'float32'),
+    npyEntry('simplex_vertex_count.npy', counts, [L], 'int32'),
+    npyEntry('world_xyz.npy', xyz, [L, 3], 'float32'),
+    jsonEntry('metadata.json', {
+      format: 'geomy-landmarks-numpy',
+      version: GEOMY_VERSION,
+      arrays: {
+        simplex: 'int32[L,3]',
+        barycentric: 'float32[L,3]',
+        simplex_vertex_count: 'int32[L]',
+        world_xyz: 'float32[L,3]',
+      },
+    }),
+  ];
+}
+
+function exportLandmarksNPZ() {
+  if (!landmarks.length) return alert('No landmarks.');
+  downloadArrayBundle(landmarkArrayExportEntries(), 'landmarks.npz');
+}
+
+function exportLandmarksByFormat(format) {
+  if (format === 'npz') exportLandmarksNPZ();
+  else exportJSON();
+}
+
+async function importLandmarkFile(file) {
+  if (!file) return;
+  try {
+    const payload = await readLandmarkImportPayload(file);
+    const absoluteSpace = payload?.coordinateSpaces?.absolute || payload?.coordinateSpace || 'asset-local';
+    const imported = (payload?.landmarks || []).map((entry, index) => normalizeImportedLandmark(entry, index, nextLandmarkId + index, absoluteSpace)).filter(Boolean);
+    if (!imported.length) throw new Error('No valid landmarks found.');
+    commit('import landmarks', () => {
+      landmarks = imported;
+      nextLandmarkId = Math.max(nextLandmarkId, Math.max(0, ...landmarks.map(l => l.id)) + 1);
+      selectedIndex = -1;
+      rebuildMarkers();
+    });
+  } catch (error) {
+    console.error('Failed to import landmarks:', error);
+    alert(error?.message || 'Failed to import landmarks.');
+  } finally {
+    const input = document.getElementById('landmark-import-file');
+    if (input) input.value = '';
+  }
+}
+
+
 // ── Export ──────────────────────────────────────────────────────────
 
 function absoluteExportData(landmark, index) {
@@ -1556,11 +1752,19 @@ function renderPanel() {
       <span>Export</span>
       <span class="section-help" tabindex="0" data-tip="Imports/exports absolute world positions plus triangle, vertex, and edge snap bindings.">?</span>
     </div>
-    <div class="btn-row landmark-io-row">
-      <button id="btn-import-json" class="btn">Import JSON</button>
-      <button id="btn-json" class="btn btn-export">Export JSON</button>
+    <div class="material-row landmark-io-row">
+      <label>Format</label>
+      <select id="landmark-io-format">
+        <option value="json">JSON</option>
+        <option value="npz">NPZ</option>
+      </select>
+      <span></span>
     </div>
-    <input id="landmark-import-file" class="landmark-file-input" type="file" accept=".json,application/json">
+    <div class="btn-row landmark-io-row">
+      <button id="btn-import-json" class="btn">Import</button>
+      <button id="btn-json" class="btn btn-export">Export</button>
+    </div>
+    <input id="landmark-import-file" class="landmark-file-input" type="file" accept=".json,.npz,.zip,application/json,application/zip">
   `;
 
   // Snap mode radios
@@ -1582,9 +1786,11 @@ function renderPanel() {
     importInput?.click();
   });
   importInput?.addEventListener('change', () => {
-    importJSONFile(importInput.files?.[0]);
+    importLandmarkFile(importInput.files?.[0]);
   });
-  document.getElementById('btn-json')?.addEventListener('click', exportJSON);
+  document.getElementById('btn-json')?.addEventListener('click', () => {
+    exportLandmarksByFormat(document.getElementById('landmark-io-format')?.value || 'json');
+  });
 
   // Landmark scale slider
   const scaleSlider = document.getElementById('landmark-scale');

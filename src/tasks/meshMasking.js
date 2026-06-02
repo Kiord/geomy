@@ -3,6 +3,7 @@ import { app } from '../app.js';
 import { HistoryStack } from '../core/HistoryStack.js';
 import { GEOMY_VERSION } from '../version.js';
 import { raycast, downloadBlob } from '../util.js';
+import { downloadArrayBundle, jsonEntry, npyEntry, parseBundleArrays, readArrayBundle } from '../io/numpyBundle.js';
 import {
   MeshComponentIndex,
   MeshRenderBackup,
@@ -934,6 +935,131 @@ function maskExportPayload(mask, meshes) {
   };
 }
 
+
+function maskArrayExportEntries(mask, meshes) {
+  const entries = [
+    jsonEntry('metadata.json', {
+      format: 'geomy-mesh-mask-numpy',
+      version: GEOMY_VERSION,
+      maskName: maskName(mask, activeMaskIndex),
+      arrays: {
+        'mesh_N/mask.npy': 'bool[V]',
+        'mesh_N/indices.npy': 'int32[K]',
+      },
+    }),
+  ];
+
+  meshes.forEach((mesh, meshIndex) => {
+    const vertexCount = mesh.geometry?.attributes?.position?.count || 0;
+    const maskArray = new Uint8Array(vertexCount);
+    const selected = Array.from(getMaskSelection(mask, mesh)).filter(i => i >= 0 && i < vertexCount).sort((a, b) => a - b);
+    selected.forEach(i => { maskArray[i] = 1; });
+    entries.push(npyEntry(`mesh_${meshIndex}/mask.npy`, maskArray, [vertexCount], 'bool'));
+    entries.push(npyEntry(`mesh_${meshIndex}/indices.npy`, new Int32Array(selected), [selected.length], 'int32'));
+  });
+
+  return entries;
+}
+
+function exportNPZ() {
+  const meshes = getCurrentMeshes();
+  if (!meshes.length) return alert('No mesh loaded.');
+  const activeMask = getActiveMask();
+  downloadArrayBundle(maskArrayExportEntries(activeMask, meshes), `mesh-mask-${safeFilename(maskName(activeMask, activeMaskIndex))}.npz`);
+}
+
+function exportByFormat(format) {
+  if (format === 'npz') exportNPZ();
+  else exportJSON();
+}
+
+function arrayEntryByNames(arrays, names) {
+  for (const name of names) {
+    if (arrays.has(name)) return arrays.get(name);
+  }
+  return null;
+}
+
+async function parseMaskBundleFile(file) {
+  const entries = await readArrayBundle(file);
+  const arrays = parseBundleArrays(entries);
+  const meshes = getCurrentMeshes();
+  if (!meshes.length) throw new Error('Load a mesh before importing masks.');
+
+  const mask = makeImportedMask(sourceNameFromFile(file).replace(/\.(npz|zip)$/i, '') || 'Imported Mask');
+  let skipped = 0;
+  let matched = 0;
+
+  meshes.forEach((mesh, meshIndex) => {
+    const vertexCount = mesh.geometry?.attributes?.position?.count || 0;
+    const dense = arrayEntryByNames(arrays, [`mesh_${meshIndex}/mask.npy`, `mask_${meshIndex}.npy`, 'mask.npy']);
+    const indices = arrayEntryByNames(arrays, [`mesh_${meshIndex}/indices.npy`, `indices_${meshIndex}.npy`, 'indices.npy', 'index.npy']);
+
+    const selected = new Set();
+    if (dense) {
+      const n = Math.min(vertexCount, dense.data.length);
+      for (let i = 0; i < n; i++) if (dense.data[i]) selected.add(i);
+      if (dense.data.length > vertexCount) skipped += dense.data.length - vertexCount;
+    } else if (indices) {
+      for (let i = 0; i < indices.data.length; i++) {
+        const index = Number(indices.data[i]);
+        if (Number.isInteger(index) && index >= 0 && index < vertexCount) selected.add(index);
+        else skipped += 1;
+      }
+    }
+
+    if (dense || indices) {
+      mask.selectedByMesh.set(mesh, selected);
+      matched += 1;
+    }
+  });
+
+  if (!matched) throw new Error('No mask arrays matched the current mesh.');
+  return { masks: [mask], activeMaskIndex: 0, skipped };
+}
+
+async function importMaskFiles(fileList) {
+  const files = Array.from(fileList || []).filter(Boolean);
+  if (!files.length) return;
+
+  const jsonFiles = files.filter(file => !/\.(npz|zip)$/i.test(file.name || ''));
+  const arrayFiles = files.filter(file => /\.(npz|zip)$/i.test(file.name || ''));
+
+  if (jsonFiles.length) await importJSONFiles(jsonFiles);
+  if (!arrayFiles.length) return;
+
+  const importedMasks = [];
+  const failures = [];
+  let skipped = 0;
+
+  makeImportedMask.nextId = Math.max(1, nextMaskId, Math.max(0, ...masks.map(mask => mask.id)) + 1);
+
+  for (const file of arrayFiles) {
+    try {
+      const result = await parseMaskBundleFile(file);
+      importedMasks.push(...result.masks);
+      skipped += result.skipped;
+    } catch (error) {
+      console.error('Failed to import mesh mask bundle:', file?.name, error);
+      failures.push(`${file?.name || 'mask bundle'}: ${error?.message || 'failed to import'}`);
+    }
+  }
+
+  if (importedMasks.length) {
+    commit('import mesh masks', () => {
+      masks.push(...importedMasks);
+      nextMaskId = Math.max(nextMaskId, Math.max(0, ...masks.map(mask => mask.id)) + 1);
+      activeMaskIndex = masks.length - importedMasks.length;
+    }, { updatePanel: true });
+  }
+
+  const messages = [];
+  if (importedMasks.length) messages.push(`Imported ${importedMasks.length} mask${importedMasks.length === 1 ? '' : 's'}.`);
+  if (skipped > 0) messages.push(`Skipped ${skipped} invalid entr${skipped === 1 ? 'y' : 'ies'}.`);
+  if (failures.length) messages.push(`Failed: ${failures.join('; ')}`);
+  if (messages.length) alert(messages.join('\n'));
+}
+
 function exportJSON() {
   const meshes = getCurrentMeshes();
   if (!meshes.length) return alert('No mesh loaded.');
@@ -1495,11 +1621,19 @@ function renderPanel() {
       <span>Save / Load</span>
       <span class="section-help" tabindex="0" data-tip="Export saves the active mask only. Import can load one or more JSON masks and appends them to the list.">?</span>
     </div>
-    <div class="btn-row mesh-mask-io-row">
-      <button id="btn-mesh-mask-import" class="btn">Import JSON</button>
-      <button id="btn-mesh-mask-export" class="btn btn-export">Export JSON</button>
+    <div class="material-row mesh-mask-io-row">
+      <label>Format</label>
+      <select id="mesh-mask-io-format">
+        <option value="json">JSON</option>
+        <option value="npz">NPZ</option>
+      </select>
+      <span></span>
     </div>
-    <input id="mesh-mask-import-file" class="mesh-mask-file-input" type="file" accept=".json,application/json" multiple>
+    <div class="btn-row mesh-mask-io-row">
+      <button id="btn-mesh-mask-import" class="btn">Import</button>
+      <button id="btn-mesh-mask-export" class="btn btn-export">Export</button>
+    </div>
+    <input id="mesh-mask-import-file" class="mesh-mask-file-input" type="file" accept=".json,.npz,.zip,application/json,application/zip" multiple>
   `;
 
   const brushSlider = document.getElementById('mesh-mask-brush');
@@ -1510,11 +1644,11 @@ function renderPanel() {
     if (getSelectedCount() === 0 || window.confirm('Clear the active mask?')) clearMask();
   });
   document.getElementById('btn-mesh-mask-invert')?.addEventListener('click', invertMask);
-  document.getElementById('btn-mesh-mask-export')?.addEventListener('click', exportJSON);
+  document.getElementById('btn-mesh-mask-export')?.addEventListener('click', () => exportByFormat(document.getElementById('mesh-mask-io-format')?.value || 'json'));
 
   const importInput = document.getElementById('mesh-mask-import-file');
   document.getElementById('btn-mesh-mask-import')?.addEventListener('click', () => importInput?.click());
-  importInput?.addEventListener('change', () => importJSONFiles(importInput.files));
+  importInput?.addEventListener('change', () => importMaskFiles(importInput.files));
 
   renderMaskList();
   updatePanelStats();

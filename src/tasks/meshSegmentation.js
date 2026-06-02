@@ -3,6 +3,7 @@ import { app } from '../app.js';
 import { HistoryStack } from '../core/HistoryStack.js';
 import { GEOMY_VERSION } from '../version.js';
 import { raycast, downloadBlob } from '../util.js';
+import { downloadArrayBundle, jsonEntry, npyEntry, parseBundleArrays, readArrayBundle } from '../io/numpyBundle.js';
 import {
   MeshComponentIndex,
   MeshRenderBackup,
@@ -1015,6 +1016,152 @@ function updateRegionListState() {
   });
 }
 
+
+function colorFloatTriples() {
+  const out = new Float32Array(regions.length * 3);
+  regions.forEach((region, index) => {
+    const color = new THREE.Color(region.color);
+    out[index * 3] = color.r;
+    out[index * 3 + 1] = color.g;
+    out[index * 3 + 2] = color.b;
+  });
+  return out;
+}
+
+function segmentationArrayExportEntries(currentMeshes) {
+  const entries = [
+    npyEntry('colors.npy', colorFloatTriples(), [regions.length, 3], 'float32'),
+    jsonEntry('metadata.json', {
+      format: 'geomy-mesh-segmentation-numpy',
+      version: GEOMY_VERSION,
+      regions: regions.map(region => ({ id: region.id, name: regionName(region), color: region.color })),
+      activeRegionIndex,
+      arrays: {
+        'mesh_N/masks.npy': 'bool[V,S]',
+        'colors.npy': 'float32[S,3]',
+      },
+    }),
+  ];
+
+  currentMeshes.forEach((mesh, meshIndex) => {
+    const assignment = assignmentFor(mesh);
+    const vertexCount = mesh.geometry?.attributes?.position?.count || 0;
+    const dense = new Uint8Array(vertexCount * regions.length);
+
+    for (let v = 0; v < vertexCount; v++) {
+      const regionIndex = regions.findIndex(region => region.id === assignment?.[v]);
+      if (regionIndex >= 0) dense[v * regions.length + regionIndex] = 1;
+    }
+
+    entries.push(npyEntry(`mesh_${meshIndex}/masks.npy`, dense, [vertexCount, regions.length], 'bool'));
+  });
+
+  return entries;
+}
+
+function exportNPZ() {
+  const currentMeshes = meshes();
+  if (!currentMeshes.length) return alert('No mesh loaded.');
+  downloadArrayBundle(segmentationArrayExportEntries(currentMeshes), 'mesh-segmentation.npz');
+}
+
+function exportByFormat(format) {
+  if (format === 'npz') exportNPZ();
+  else exportJSON();
+}
+
+function arrayEntryByNames(arrays, names) {
+  for (const name of names) {
+    if (arrays.has(name)) return arrays.get(name);
+  }
+  return null;
+}
+
+async function parseSegmentationBundle(file) {
+  const currentMeshes = meshes();
+  if (!currentMeshes.length) throw new Error('Load a mesh before importing a segmentation.');
+
+  const entries = await readArrayBundle(file);
+  const arrays = parseBundleArrays(entries);
+  const colors = arrayEntryByNames(arrays, ['colors.npy']);
+  const firstMasks = arrayEntryByNames(arrays, ['mesh_0/masks.npy', 'masks.npy', 'segmentation.npy']);
+  if (!firstMasks) throw new Error('Segmentation bundle needs masks.npy or mesh_0/masks.npy.');
+
+  const S = firstMasks.shape?.[1] || colors?.shape?.[0] || 0;
+  if (!S) throw new Error('Could not infer region count from segmentation arrays.');
+
+  const importedRegions = [];
+  for (let i = 0; i < S; i++) {
+    let color = defaultRegionColor(i + 1);
+    if (colors?.data?.length >= (i + 1) * 3) {
+      const c = new THREE.Color(colors.data[i * 3], colors.data[i * 3 + 1], colors.data[i * 3 + 2]);
+      color = `#${c.getHexString()}`;
+    }
+    importedRegions.push(makeRegion(`Region ${i + 1}`, color, i + 1));
+  }
+
+  const importedAssignments = new Map();
+  let skipped = 0;
+
+  currentMeshes.forEach((mesh, meshIndex) => {
+    const masksArray = arrayEntryByNames(arrays, [`mesh_${meshIndex}/masks.npy`, meshIndex === 0 ? 'masks.npy' : `masks_${meshIndex}.npy`]);
+    if (!masksArray) return;
+
+    const vertexCount = mesh.geometry?.attributes?.position?.count || 0;
+    const cols = masksArray.shape?.[1] || S;
+    const rows = masksArray.shape?.[0] || Math.floor(masksArray.data.length / Math.max(1, cols));
+    const assignment = new Int32Array(vertexCount);
+    const n = Math.min(rows, vertexCount);
+
+    for (let v = 0; v < n; v++) {
+      let chosen = -1;
+      for (let r = 0; r < Math.min(cols, S); r++) {
+        if (masksArray.data[v * cols + r]) {
+          chosen = r;
+          break;
+        }
+      }
+      if (chosen >= 0) assignment[v] = importedRegions[chosen].id;
+    }
+
+    if (rows > vertexCount) skipped += rows - vertexCount;
+    importedAssignments.set(mesh, assignment);
+  });
+
+  if (!importedAssignments.size) throw new Error('No segmentation arrays matched the current mesh.');
+  return { regions: importedRegions, assignments: importedAssignments, activeRegionIndex: 0, skipped };
+}
+
+async function importSegmentationFiles(fileList) {
+  const file = Array.from(fileList || [])[0];
+  if (!file) return;
+
+  const isBundle = /\.(npz|zip)$/i.test(file.name || '');
+  try {
+    const imported = isBundle ? await parseSegmentationBundle(file) : parseSegmentation(await readJSON(file));
+    if (assignedVertexCount() > 0 && !window.confirm('Replace the current segmentation with the imported one?')) return;
+
+    commit('import segmentation', () => {
+      regions = imported.regions;
+      activeRegionIndex = imported.activeRegionIndex;
+      assignmentsByMesh.clear();
+      imported.assignments.forEach((assignment, mesh) => assignmentsByMesh.set(mesh, assignment));
+      nextRegionId = Math.max(1, Math.max(0, ...regions.map(region => region.id)) + 1);
+    }, { renderRegions: true });
+
+    if (imported.skipped > 0) {
+      alert(`Imported segmentation. Skipped ${imported.skipped} invalid entr${imported.skipped === 1 ? 'y' : 'ies'}.`);
+    }
+  } catch (error) {
+    console.error('Failed to import mesh segmentation:', error);
+    alert(error?.message || 'Failed to import mesh segmentation.');
+  } finally {
+    const input = document.getElementById('mesh-seg-import-file');
+    if (input) input.value = '';
+  }
+}
+
+
 function exportJSON() {
   const currentMeshes = meshes();
   if (!currentMeshes.length) return alert('No mesh loaded.');
@@ -1214,11 +1361,19 @@ function renderPanel() {
       <span>Save / Load</span>
       <span class="section-help" tabindex="0" data-tip="Export saves all regions and vertex assignments. Import replaces the current segmentation.">?</span>
     </div>
-    <div class="btn-row mesh-mask-io-row">
-      <button id="btn-mesh-seg-import" class="btn">Import JSON</button>
-      <button id="btn-mesh-seg-export" class="btn btn-export">Export JSON</button>
+    <div class="material-row mesh-mask-io-row">
+      <label>Format</label>
+      <select id="mesh-seg-io-format">
+        <option value="json">JSON</option>
+        <option value="npz">NPZ</option>
+      </select>
+      <span></span>
     </div>
-    <input id="mesh-seg-import-file" class="mesh-mask-file-input" type="file" accept=".json,application/json">
+    <div class="btn-row mesh-mask-io-row">
+      <button id="btn-mesh-seg-import" class="btn">Import</button>
+      <button id="btn-mesh-seg-export" class="btn btn-export">Export</button>
+    </div>
+    <input id="mesh-seg-import-file" class="mesh-mask-file-input" type="file" accept=".json,.npz,.zip,application/json,application/zip">
   `;
 
   const brushSlider = document.getElementById('mesh-seg-brush');
@@ -1230,11 +1385,11 @@ function renderPanel() {
   document.getElementById('btn-mesh-seg-clear-all')?.addEventListener('click', () => {
     if (assignedVertexCount() === 0 || window.confirm('Clear all region assignments?')) clearAll();
   });
-  document.getElementById('btn-mesh-seg-export')?.addEventListener('click', exportJSON);
+  document.getElementById('btn-mesh-seg-export')?.addEventListener('click', () => exportByFormat(document.getElementById('mesh-seg-io-format')?.value || 'json'));
 
   const importInput = document.getElementById('mesh-seg-import-file');
   document.getElementById('btn-mesh-seg-import')?.addEventListener('click', () => importInput?.click());
-  importInput?.addEventListener('change', () => importJSON(importInput.files));
+  importInput?.addEventListener('change', () => importSegmentationFiles(importInput.files));
 
   renderRegionList();
   updatePanelStats();
