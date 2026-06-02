@@ -2,6 +2,7 @@
 
 /* Buttons */
 .btn {
+  font-family: var(--font-family);
   background: var(--panel-bg);
   color: var(--text);
   border: 1px solid var(--text);
@@ -343,6 +344,7 @@ label.disabled input { cursor: not-allowed; }
 }
 
 .viz-section-header {
+  font-family: var(--font-family);
   width: 100%;
   display: flex;
   align-items: center;
@@ -390,11 +392,12 @@ label.disabled input { cursor: not-allowed; }
   box-shadow: var(--shadow-button-active);
 }
 
-input[type="text"],
-input[type="number"],
-input[type="file"],
+button,
+input,
 select,
-textarea {
+textarea,
+optgroup,
+option {
   font-family: var(--font-family);
 }
 
