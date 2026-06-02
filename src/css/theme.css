@@ -121,3 +121,28 @@ body {
 
 /* Selection */
 ::selection { background: var(--accent); color: #fff; }
+
+
+
+.theme-icon-btn img {
+  width: 20px;
+  height: 20px;
+  display: block;
+}
+
+.theme-icon-btn {
+  border: none;
+  background: transparent;
+  box-shadow: none;
+  outline: none;
+  padding: 4px;
+  cursor: pointer;
+}
+
+#theme-toggle:hover,
+#theme-toggle:focus,
+#theme-toggle:active {
+  background: transparent !important;
+  border-color: transparent !important;
+  box-shadow: none !important;
+}

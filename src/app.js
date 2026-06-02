@@ -473,20 +473,28 @@ export function initDragDrop() {
   });
 }
 
-// ── Theme toggle ──
 export function initThemeToggle() {
-    const btn = document.getElementById('theme-toggle');
-    const saved = localStorage.getItem('geomy-theme') || 'light';
-    document.documentElement.setAttribute('data-theme', saved);
-    btn.textContent = saved === 'dark' ? 'Light theme' : 'Dark theme';
-    btn.addEventListener('click', () => {
+  const btn = document.getElementById('theme-toggle');
+  const icon = document.getElementById('theme-toggle-icon');
+
+  const syncIcon = theme => {
+    icon.src = theme === 'dark' ? '/light_icon.svg' : '/dark_icon.svg';
+    btn.title = theme === 'dark' ? 'Switch to light theme' : 'Switch to dark theme';
+  };
+
+  const saved = localStorage.getItem('geomy-theme') || 'light';
+  document.documentElement.setAttribute('data-theme', saved);
+  syncIcon(saved);
+
+  btn.addEventListener('click', () => {
     const cur = document.documentElement.getAttribute('data-theme');
-        const next = cur === 'dark' ? 'light' : 'dark';
-        document.documentElement.setAttribute('data-theme', next);
-        localStorage.setItem('geomy-theme', next);
-        btn.textContent = next === 'dark' ? 'Light theme' : 'Dark theme';
-        window.dispatchEvent(new Event('themechange'));
-        });
+    const next = cur === 'dark' ? 'light' : 'dark';
+
+    document.documentElement.setAttribute('data-theme', next);
+    localStorage.setItem('geomy-theme', next);
+    syncIcon(next);
+    window.dispatchEvent(new Event('themechange'));
+  });
 }
 
 // ── Task switching ──
