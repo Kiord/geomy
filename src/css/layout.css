@@ -190,3 +190,15 @@ body {
 
   user-select: none;
 }
+
+#topbar .logo {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+}
+
+.logo-icon {
+  width: 24px;
+  height: 24px;
+  display: block;
+}

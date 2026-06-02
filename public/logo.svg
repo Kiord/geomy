@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128">
+  <defs>
+    <clipPath id="sphereClip">
+      <circle cx="64" cy="64" r="42"/>
+    </clipPath>
+  </defs>
+  <circle cx="64" cy="64" r="55" fill="#6bb7e8"/>
+  <g clip-path="url(#sphereClip)" fill="none" stroke="#111" stroke-width="8">
+    <path d="M22 64 C36 78 92 78 106 64"/>
+    <path d="M64 22 C82 38 82 90 64 106"/>
+  </g>
+  <circle cx="64" cy="64" r="42" fill="none" stroke="#111" stroke-width="8"/>
+  <circle cx="40" cy="37" r="20" fill="#d64a3a" stroke="#111" stroke-width="8"/>
+</svg>
