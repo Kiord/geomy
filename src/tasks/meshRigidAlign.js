@@ -3,6 +3,7 @@ import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
 import { OBJLoader } from 'three/examples/jsm/loaders/OBJLoader.js';
 import { STLLoader } from 'three/examples/jsm/loaders/STLLoader.js';
 import { PLYLoader } from 'three/examples/jsm/loaders/PLYLoader.js';
+import { mergeVertices } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import { MeshBVH } from 'three-mesh-bvh';
 
 import { app, updateEnvironmentUsage } from '../app.js';
@@ -26,7 +27,6 @@ import {
   isTextInputTarget,
   roundNumber,
   setVertexColor,
-  sourceRootToTargetRootMatrix,
   vectorPayload,
 } from './meshTaskUtils.js';
 import '../css/meshRigidAlign.css';
@@ -124,6 +124,38 @@ const heatmapFieldCache = {
 };
 
 const history = new HistoryStack({ limit: STACK_LIMIT });
+
+function smoothImportedGeometry(geometry, { weldVertices = false } = {}) {
+  if (!geometry?.attributes?.position) return geometry;
+
+  let next = geometry;
+
+  if (weldVertices) {
+    next.deleteAttribute?.('normal');
+    next = mergeVertices(next, 1e-5);
+  }
+
+  next.computeVertexNormals?.();
+  next.computeBoundingBox?.();
+  next.computeBoundingSphere?.();
+  return next;
+}
+
+function prepareObjectGeometry(object, { weldVertices = false } = {}) {
+  object?.traverse?.(child => {
+    if (!child.isMesh || !child.geometry) return;
+
+    const original = child.geometry;
+    const prepared = smoothImportedGeometry(original, { weldVertices });
+    if (prepared && prepared !== original) {
+      child.geometry = prepared;
+      original.dispose?.();
+    }
+  });
+
+  return object;
+}
+
 
 const cursorState = {
   x: 0,
@@ -352,10 +384,28 @@ function setRootMatrix(root, matrix) {
   root.updateMatrixWorld(true);
 }
 
-function matrixArray(object) {
-  if (!object) return null;
-  object.updateMatrix();
-  return object.matrix.toArray().map(roundNumber);
+function matrixArray(value) {
+  if (!value) return null;
+
+  if (value.isMatrix4) {
+    return value.toArray().map(roundNumber);
+  }
+
+  if (value.matrix?.isMatrix4) {
+    value.updateMatrix?.();
+    return value.matrix.toArray().map(roundNumber);
+  }
+
+  return null;
+}
+
+function sourceAssetToTargetAssetMatrix() {
+  if (!sourceObject || !targetObject) return null;
+
+  sourceObject.updateMatrix?.();
+  targetObject.updateMatrix?.();
+
+  return targetObject.matrix.clone().invert().multiply(sourceObject.matrix);
 }
 
 function updateTaskVertexCount() {
@@ -717,6 +767,8 @@ function restoreSnapshot(snapshot) {
     setRootMatrix(sourceObject, new THREE.Matrix4().fromArray(snapshot.sourceMatrix));
   }
 
+  clearDistanceFieldCache();
+
   restoreSelectionSnapshot('target', snapshot.target || []);
   restoreSelectionSnapshot('source', snapshot.source || []);
 
@@ -998,12 +1050,7 @@ function normalizeObjectToUnitBox(object) {
 
   object.scale.setScalar(scale);
   object.position.sub(center.multiplyScalar(scale));
-  object.updateMatrix();
   object.updateMatrixWorld(true);
-
-  const matrix = object.matrix.clone();
-  object.userData.geomyViewerNormalizeMatrix = matrix.toArray();
-  object.userData.geomyViewerNormalizeInverseMatrix = matrix.clone().invert().toArray();
 }
 
 async function objectFromFile(file, side) {
@@ -1021,14 +1068,10 @@ async function objectFromFile(file, side) {
 
     if (ext === 'obj') {
       const obj = await loader.loadAsync(url);
-      obj.traverse(child => {
-        if (child.isMesh && !child.geometry.attributes.normal) child.geometry.computeVertexNormals();
-      });
-      return obj;
+      return prepareObjectGeometry(obj, { weldVertices: true });
     }
 
-    const geometry = await loader.loadAsync(url);
-    geometry.computeVertexNormals?.();
+    const geometry = smoothImportedGeometry(await loader.loadAsync(url));
     return new THREE.Mesh(geometry, new THREE.MeshStandardMaterial({ color: '#e0e0e0', roughness: 0.4, metalness: 0.1 }));
   } finally {
     URL.revokeObjectURL(url);
@@ -1125,6 +1168,7 @@ function resetSourceTransform() {
   return commit('reset source transform', () => {
     const initial = sourceInitialMatrix?.clone?.() || new THREE.Matrix4();
     setRootMatrix(sourceObject, initial);
+    clearDistanceFieldCache();
     lastResult = null;
     updateAllColors();
     rebuildLandmarkMarkers();
@@ -1137,6 +1181,7 @@ function resetTargetTransform() {
   return commit('reset target transform', () => {
     const initial = targetInitialMatrix?.clone?.() || new THREE.Matrix4();
     setRootMatrix(targetObject, initial);
+    clearDistanceFieldCache();
     lastResult = null;
     updateAllColors();
     rebuildLandmarkMarkers();
@@ -1148,6 +1193,7 @@ function applyDeltaToSource(deltaMatrix) {
 
   sourceObject.applyMatrix4(deltaMatrix);
   sourceObject.updateMatrixWorld(true);
+  clearDistanceFieldCache();
 }
 
 // ── Picking and painting ──────────────────────────────────────────
@@ -2147,6 +2193,11 @@ function colorMeshFromDistanceField(mesh, field, maxDistance) {
   }
 
   colorAttribute.needsUpdate = true;
+  getMaterialList(mesh.material).forEach(material => {
+    if (!material) return;
+    material.vertexColors = true;
+    material.needsUpdate = true;
+  });
   return position.count;
 }
 
@@ -2962,8 +3013,6 @@ async function importMaskFileForSide(side, file) {
 
 function vectorFromLandmarkPayload(data) {
   const candidates = [
-    data?.assetPosition,
-    data?.localPosition,
     data?.worldPosition,
     data?.position,
     data?.point,
@@ -2999,17 +3048,13 @@ function parseLandmarkPayloadForSide(payload, side) {
 
   if (!source) throw new Error('This JSON does not contain a landmarks array.');
 
-  const absoluteSpace = Array.isArray(payload)
-    ? 'asset-local'
-    : (payload?.coordinateSpaces?.absolute || 'asset-local');
-
   const landmarks = [];
   let skipped = 0;
   let maxId = 0;
 
   source.forEach((entry, index) => {
-    const position = vectorFromLandmarkPayload(entry);
-    if (!position) {
+    const world = vectorFromLandmarkPayload(entry);
+    if (!world) {
       skipped += 1;
       return;
     }
@@ -3021,9 +3066,7 @@ function parseLandmarkPayloadForSide(payload, side) {
     maxId = Math.max(maxId, id);
     landmarks.push({
       id,
-      local: absoluteSpace === 'world'
-        ? root.worldToLocal(position.clone())
-        : position.clone(),
+      local: root.worldToLocal(world.clone()),
     });
   });
 
@@ -3061,17 +3104,15 @@ async function importLandmarksForSide(side, file) {
 }
 
 function landmarkExportEntry(side, landmark, rowIndex, exportIndex) {
+  const world = getWorldLandmark(side, rowIndex);
   const mesh = getMeshesForSide(side)[0] || null;
-  const assetPosition = landmark.local.clone();
 
   return {
     index: exportIndex,
     id: landmark.id,
     name: `${sideLabel(side)} Landmark ${exportIndex + 1}`,
     snapMode: 'triangle',
-    assetPosition: vectorPayload(assetPosition),
-    // Kept for older imports, but now intentionally stores asset-local coordinates.
-    worldPosition: vectorPayload(assetPosition),
+    worldPosition: vectorPayload(world),
     snap: {
       type: 'triangle',
       meshUuid: mesh?.uuid ?? null,
@@ -3100,7 +3141,7 @@ function exportLandmarksForSide(side) {
     format: 'geomy-landmarks',
     version: GEOMY_VERSION,
     coordinateSpaces: {
-      absolute: 'asset-local',
+      absolute: 'world',
       triangle: 'mesh-face-barycentric',
       vertex: 'mesh-vertex-index',
       edge: 'mesh-edge-two-point-barycentric',
@@ -3123,7 +3164,7 @@ function transformExportPayload() {
     sourceFileName,
     targetFileName,
     createdAt: new Date().toISOString(),
-    sourceToTargetMatrix: matrixArray(sourceRootToTargetRootMatrix(sourceObject, targetObject)),
+    sourceToTargetMatrix: matrixArray(sourceAssetToTargetAssetMatrix()),
     allowMirroring,
     landmarkBlend: effectiveLandmarkBlend({ requireMinimum: true }),
     alignOptions: {
@@ -3133,13 +3174,9 @@ function transformExportPayload() {
       allowReflection: allowMirroring,
     },
     lastResult,
-    coordinateSpaces: {
-      sourceToTargetMatrix: 'source-asset-local-to-target-asset-local',
-      landmarkPairs: 'asset-local',
-    },
     landmarkPairs: completeLandmarkPairs().map(pair => ({
-      source: vectorPayload(sourceLandmarks[pair.index]?.local || pair.source),
-      target: vectorPayload(targetLandmarks[pair.index]?.local || pair.target),
+      source: vectorPayload(pair.source),
+      target: vectorPayload(pair.target),
       index: pair.index,
     })),
   };
@@ -3867,3 +3904,4 @@ export const meshRigidAlignTask = {
     forceRigidOpacityControls();
   },
 };
+

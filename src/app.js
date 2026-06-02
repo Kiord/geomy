@@ -3,6 +3,7 @@ import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
 import { OBJLoader } from 'three/examples/jsm/loaders/OBJLoader.js';
 import { STLLoader } from 'three/examples/jsm/loaders/STLLoader.js';
 import { PLYLoader } from 'three/examples/jsm/loaders/PLYLoader.js';
+import { mergeVertices } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import { RoundedArcballControls } from './controls/RoundedArcballControls.js';
@@ -269,18 +270,6 @@ export function setEnvironmentBackgroundVisible(visible) {
   syncBackground();
 }
 
-function storeViewerNormalization(object) {
-  if (!object) return;
-  object.updateMatrix();
-  object.updateMatrixWorld(true);
-
-  const matrix = object.matrix.clone();
-  const inverse = matrix.clone().invert();
-
-  object.userData.geomyViewerNormalizeMatrix = matrix.toArray();
-  object.userData.geomyViewerNormalizeInverseMatrix = inverse.toArray();
-}
-
 export function createControls(mode = 'arcball') {
   if (!app.camera || !app.renderer) return null;
 
@@ -344,6 +333,41 @@ const loaders = {
   ply: new PLYLoader(),
 };
 
+
+function smoothImportedGeometry(geometry, { weldVertices = false } = {}) {
+  if (!geometry?.attributes?.position) return geometry;
+
+  let next = geometry;
+
+  if (weldVertices) {
+    // OBJ often expands the same position into many vertices because OBJ has
+    // independent position/uv/normal indices. Dropping imported normals before
+    // welding lets Smooth Shading build continuous normals again where UVs allow.
+    next.deleteAttribute?.('normal');
+    next = mergeVertices(next, 1e-5);
+  }
+
+  next.computeVertexNormals?.();
+  next.computeBoundingBox?.();
+  next.computeBoundingSphere?.();
+  return next;
+}
+
+function prepareObjectGeometry(object, { weldVertices = false } = {}) {
+  object?.traverse?.(child => {
+    if (!child.isMesh || !child.geometry) return;
+
+    const original = child.geometry;
+    const prepared = smoothImportedGeometry(original, { weldVertices });
+    if (prepared && prepared !== original) {
+      child.geometry = prepared;
+      original.dispose?.();
+    }
+  });
+
+  return object;
+}
+
 // ── File loading ──
 export function loadFile(file) {
   if (!file) return;
@@ -380,7 +404,6 @@ export function loadFile(file) {
     const s = 1.5 / maxDim;
     obj.scale.setScalar(s);
     obj.position.sub(center.multiplyScalar(s));
-    storeViewerNormalization(obj);
     app.scene.add(obj);
     obj.traverse(c => {
         if (c.isMesh) c.renderOrder = 0;
@@ -405,6 +428,7 @@ export function loadFile(file) {
         loaders.gltf.load(url, g => addToScene(g.scene)); break;
       case 'obj':
         loaders.obj.load(url, obj => {
+          prepareObjectGeometry(obj, { weldVertices: true });
           obj.traverse(c => {
             if (c.isMesh) c.material = new THREE.MeshStandardMaterial({ color: '#e0e0e0', roughness: 0.4, metalness: 0.1 });
           });
@@ -412,13 +436,13 @@ export function loadFile(file) {
         }); break;
       case 'stl':
         loaders.stl.load(url, geo => {
-          geo.computeVertexNormals();
-          addToScene(new THREE.Mesh(geo, new THREE.MeshStandardMaterial({ color: '#e0e0e0', roughness: 0.4, metalness: 0.1 })));
+          const prepared = smoothImportedGeometry(geo);
+          addToScene(new THREE.Mesh(prepared, new THREE.MeshStandardMaterial({ color: '#e0e0e0', roughness: 0.4, metalness: 0.1 })));
         }); break;
       case 'ply':
         loaders.ply.load(url, geo => {
-          geo.computeVertexNormals();
-          addToScene(new THREE.Mesh(geo, new THREE.MeshStandardMaterial({ color: '#e0e0e0', roughness: 0.4, metalness: 0.1 })));
+          const prepared = smoothImportedGeometry(geo);
+          addToScene(new THREE.Mesh(prepared, new THREE.MeshStandardMaterial({ color: '#e0e0e0', roughness: 0.4, metalness: 0.1 })));
         }); break;
       default:
         setLoadedMeshName('');
@@ -477,3 +501,5 @@ export function switchTask(taskId) {
   if (app.task?.activate) app.task.activate();
   updateTaskMeshLoader(app.task);
 }
+
+
