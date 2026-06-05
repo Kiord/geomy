@@ -1,11 +1,23 @@
 /* ── LAYOUT: Grid ── */
 body {
+  --left-panel-width: 280px;
+  --right-panel-width: 280px;
+  --left-panel-active-width: var(--left-panel-width);
+  --right-panel-active-width: var(--right-panel-width);
   display: grid;
-  grid-template-columns: 280px 1fr 280px;
+  grid-template-columns: 1fr;
   grid-template-rows: 46px 1fr;
   grid-template-areas:
-    "topbar topbar topbar"
-    "taskpanel viewport vizpanel";
+    "topbar"
+    "viewport";
+}
+
+body.panel-left-collapsed {
+  --left-panel-active-width: 0px;
+}
+
+body.panel-right-collapsed {
+  --right-panel-active-width: 0px;
 }
 
 /* Top Bar */
@@ -67,7 +79,12 @@ body {
 
 /* Task Panel (left) */
 #task-panel {
-  grid-area: taskpanel;
+  grid-row: 2;
+  grid-column: 1;
+  justify-self: start;
+  align-self: stretch;
+  width: var(--left-panel-width);
+  box-sizing: border-box;
   background: var(--panel-bg);
   border-right: 1px solid var(--border);
   box-shadow: var(--shadow-panel);
@@ -77,6 +94,17 @@ body {
   display: flex;
   flex-direction: column;
   gap: 10px;
+  min-width: 0;
+}
+
+body.panel-left-collapsed #task-panel {
+  width: 0;
+  padding-left: 0;
+  padding-right: 0;
+  border-right: 0;
+  box-shadow: none;
+  overflow: hidden;
+  visibility: hidden;
 }
 #task-panel h3 {
   font-size: 0.85rem;
@@ -126,7 +154,12 @@ body {
 
 /* Visualization Panel (right) */
 #viz-panel {
-  grid-area: vizpanel;
+  grid-row: 2;
+  grid-column: 1;
+  justify-self: end;
+  align-self: stretch;
+  width: var(--right-panel-width);
+  box-sizing: border-box;
   background: var(--panel-bg);
   border-left: 1px solid var(--border);
   box-shadow: var(--shadow-panel);
@@ -134,6 +167,17 @@ body {
   overflow-y: auto;
   z-index: 10;
   font-size: 0.82rem;
+  min-width: 0;
+}
+
+body.panel-right-collapsed #viz-panel {
+  width: 0;
+  padding-left: 0;
+  padding-right: 0;
+  border-left: 0;
+  box-shadow: none;
+  overflow: hidden;
+  visibility: hidden;
 }
 #viz-panel h3 {
   font-size: 0.85rem;
@@ -168,10 +212,54 @@ body {
   height: 100%;
 }
 
+.panel-toggle {
+  position: fixed;
+  top: calc(46px + (100vh - 46px) * 0.5);
+  z-index: 35;
+  width: 24px;
+  height: 48px;
+  padding: 0;
+  transform: translateY(-50%);
+  border: 1px solid var(--border);
+  background: var(--panel-bg-focus);
+  color: var(--text);
+  box-shadow: var(--shadow-button);
+  font-family: var(--font-family);
+  font-size: 1.15rem;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.panel-toggle:hover {
+  background: var(--hover);
+  color: var(--link-hover);
+}
+
+.panel-toggle:active {
+  transform: translateY(-50%) translate(1px, 1px);
+  box-shadow: var(--shadow-button-active);
+}
+
+.panel-toggle-left {
+  left: calc(var(--left-panel-active-width) + 8px);
+}
+
+body.panel-left-collapsed .panel-toggle-left {
+  left: 8px;
+}
+
+.panel-toggle-right {
+  right: calc(var(--right-panel-active-width) + 8px);
+}
+
+body.panel-right-collapsed .panel-toggle-right {
+  right: 8px;
+}
+
 #fps-counter {
   position: absolute;
   top: 10px;
-  left: 10px;
+  left: calc(var(--left-panel-active-width) + 10px);
   z-index: 30;
   pointer-events: none;
 

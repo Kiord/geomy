@@ -13,12 +13,55 @@ import { inpectTask } from './tasks/inspect.js';
 import { initVizPanel } from './panels/visualization.js';
 import { initGeometryInspection } from './panels/geometryInspection.js';
 
+function initSidePanelToggles() {
+  const leftBtn = document.getElementById('toggle-task-panel');
+  const rightBtn = document.getElementById('toggle-viz-panel');
+
+  function syncButton(button, collapsed, side) {
+    if (!button) return;
+
+    const isLeft = side === 'left';
+    const label = `${collapsed ? 'Expand' : 'Collapse'} ${side} panel`;
+
+    button.textContent = isLeft
+      ? (collapsed ? '›' : '‹')
+      : (collapsed ? '‹' : '›');
+    button.title = label;
+    button.setAttribute('aria-label', label);
+    button.setAttribute('aria-expanded', String(!collapsed));
+  }
+
+  function setCollapsed(side, collapsed) {
+    const className = side === 'left' ? 'panel-left-collapsed' : 'panel-right-collapsed';
+    document.body.classList.toggle(className, collapsed);
+    localStorage.setItem(`geomy-${side}-panel-collapsed`, collapsed ? '1' : '0');
+    syncButton(side === 'left' ? leftBtn : rightBtn, collapsed, side);
+
+    // Panels overlay the full-width viewport, so toggling them must not resize
+    // the canvas or touch the camera. This keeps the rendered object fixed on screen.
+  }
+
+  const leftCollapsed = localStorage.getItem('geomy-left-panel-collapsed') === '1';
+  const rightCollapsed = localStorage.getItem('geomy-right-panel-collapsed') === '1';
+
+  setCollapsed('left', leftCollapsed);
+  setCollapsed('right', rightCollapsed);
+
+  leftBtn?.addEventListener('click', () => {
+    setCollapsed('left', !document.body.classList.contains('panel-left-collapsed'));
+  });
+
+  rightBtn?.addEventListener('click', () => {
+    setCollapsed('right', !document.body.classList.contains('panel-right-collapsed'));
+  });
+}
 
 // ── Boot ──
 function boot() {
   initScene();
   initDragDrop();
   initThemeToggle();
+  initSidePanelToggles();
 
   registerTask(inpectTask);
   registerTask(landmarkPickingTask);
