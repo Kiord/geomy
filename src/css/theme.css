@@ -3,6 +3,8 @@
   --bg: #f7f3e8;
   --bg-soft: #efe7d2c9;
   --panel-bg: rgba(255, 255, 255, 0.28);
+  --topbar-bg: #fffaf0;
+  --topbar-bg: #fffaf0;
   --panel-bg-focus: rgba(255, 255, 255, 0.55);
   --surface: rgba(255, 255, 255, 0.28);
   --surface-strong: rgba(255, 255, 255, 0.55);
@@ -78,6 +80,7 @@
   --bg: #1f1a17;
   --bg-soft: rgba(62, 54, 45, 0.82);
   --panel-bg: rgba(41, 35, 30, 0.72);
+  --topbar-bg: #29231e;
   --panel-bg-focus: rgba(62, 54, 45, 0.92);
   --surface: rgba(41, 35, 30, 0.72);
   --surface-strong: rgba(62, 54, 45, 0.92);
@@ -170,3 +173,9 @@ body {
   opacity: 0.92;
 }
 
+
+
+/* The top bar is intentionally always opaque; panel opacity only affects side panels. */
+html body #topbar {
+  background: var(--topbar-bg);
+}

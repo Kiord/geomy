@@ -507,12 +507,22 @@ function initPanelOpacityToggle() {
   if (!btn || !icon) return;
 
   const normalize = value => value === 'opaque' ? 'opaque' : 'transparent';
+  const currentTheme = () => document.documentElement.getAttribute('data-theme') === 'dark' ? 'dark' : 'light';
+
+  const iconFor = mode => {
+    const isOpaque = mode === 'opaque';
+    const action = isOpaque ? 'transparent' : 'opaque';
+    const suffix = currentTheme() === 'dark' ? '_dark' : '';
+
+    return `/panel_${action}_icon${suffix}.svg`;
+  };
 
   const syncIcon = mode => {
     const isOpaque = mode === 'opaque';
 
-    icon.src = isOpaque ? '/panel_transparent_icon.svg' : '/panel_opaque_icon.svg';
+    icon.src = iconFor(mode);
     btn.title = isOpaque ? 'Use transparent panels' : 'Make panels opaque';
+    btn.setAttribute('aria-label', btn.title);
     btn.setAttribute('aria-pressed', String(isOpaque));
   };
 
@@ -527,6 +537,10 @@ function initPanelOpacityToggle() {
     document.documentElement.setAttribute('data-panel-opacity', next);
     localStorage.setItem('geomy-panel-opacity', next);
     syncIcon(next);
+  });
+
+  window.addEventListener('themechange', () => {
+    syncIcon(normalize(document.documentElement.getAttribute('data-panel-opacity')));
   });
 }
 
