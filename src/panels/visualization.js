@@ -631,17 +631,33 @@ export function initVizPanel() {
     return params;
   }
 
-  function makeNormalGradientMaterial(common, orig, mesh) {
-    const params = {
-      opacity: common.opacity,
+  function makeNormalGradientMaterial(common) {
+    const mat = new THREE.ShaderMaterial({
+      uniforms: {
+        opacity: { value: common.opacity },
+      },
+      vertexShader: `
+        varying vec3 vWorldNormal;
+
+        void main() {
+          vWorldNormal = normalize(mat3(modelMatrix) * normal);
+          gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+        }
+      `,
+      fragmentShader: `
+        uniform float opacity;
+        varying vec3 vWorldNormal;
+
+        void main() {
+          vec3 n = normalize(vWorldNormal);
+          gl_FragColor = vec4(n * 0.5 + 0.5, opacity);
+        }
+      `,
       transparent: common.transparent,
+      opacity: common.opacity,
       side: common.side,
-    };
+    });
 
-    const normalParams = getNormalMapParams(orig, mesh);
-    if (normalParams) Object.assign(params, normalParams);
-
-    const mat = new THREE.MeshNormalMaterial(params);
     mat.depthWrite = !common.transparent;
     return mat;
   }
@@ -1088,6 +1104,7 @@ export function initVizPanel() {
     },
   };
 }
+
 
 
 
