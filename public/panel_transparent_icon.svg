@@ -1,0 +1,5 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="Transparent panels">
+  <rect x="8" y="10" width="48" height="44" rx="2" fill="none" stroke="currentColor" stroke-width="3"/>
+  <rect x="12" y="14" width="14" height="36" fill="currentColor" opacity="0.28"/>
+  <rect x="38" y="14" width="14" height="36" fill="currentColor" opacity="0.28"/>
+</svg>

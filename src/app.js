@@ -478,6 +478,8 @@ export function initThemeToggle() {
   const icon = document.getElementById('theme-toggle-icon');
 
   const syncIcon = theme => {
+    if (!btn || !icon) return;
+
     icon.src = theme === 'dark' ? '/light_icon.svg' : '/dark_icon.svg';
     btn.title = theme === 'dark' ? 'Switch to light theme' : 'Switch to dark theme';
   };
@@ -486,7 +488,7 @@ export function initThemeToggle() {
   document.documentElement.setAttribute('data-theme', saved);
   syncIcon(saved);
 
-  btn.addEventListener('click', () => {
+  btn?.addEventListener('click', () => {
     const cur = document.documentElement.getAttribute('data-theme');
     const next = cur === 'dark' ? 'light' : 'dark';
 
@@ -494,6 +496,37 @@ export function initThemeToggle() {
     localStorage.setItem('geomy-theme', next);
     syncIcon(next);
     window.dispatchEvent(new Event('themechange'));
+  });
+
+  initPanelOpacityToggle();
+}
+
+function initPanelOpacityToggle() {
+  const btn = document.getElementById('panel-opacity-toggle');
+  const icon = document.getElementById('panel-opacity-toggle-icon');
+  if (!btn || !icon) return;
+
+  const normalize = value => value === 'opaque' ? 'opaque' : 'transparent';
+
+  const syncIcon = mode => {
+    const isOpaque = mode === 'opaque';
+
+    icon.src = isOpaque ? '/panel_transparent_icon.svg' : '/panel_opaque_icon.svg';
+    btn.title = isOpaque ? 'Use transparent panels' : 'Make panels opaque';
+    btn.setAttribute('aria-pressed', String(isOpaque));
+  };
+
+  const saved = normalize(localStorage.getItem('geomy-panel-opacity'));
+  document.documentElement.setAttribute('data-panel-opacity', saved);
+  syncIcon(saved);
+
+  btn.addEventListener('click', () => {
+    const cur = normalize(document.documentElement.getAttribute('data-panel-opacity'));
+    const next = cur === 'opaque' ? 'transparent' : 'opaque';
+
+    document.documentElement.setAttribute('data-panel-opacity', next);
+    localStorage.setItem('geomy-panel-opacity', next);
+    syncIcon(next);
   });
 }
 
@@ -509,5 +542,6 @@ export function switchTask(taskId) {
   if (app.task?.activate) app.task.activate();
   updateTaskMeshLoader(app.task);
 }
+
 
 

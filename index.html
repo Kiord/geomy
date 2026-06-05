@@ -10,7 +10,9 @@
     <script>
       (function() {
         var theme = localStorage.getItem('geomy-theme') || 'light';
+        var panelOpacity = localStorage.getItem('geomy-panel-opacity') || 'transparent';
         document.documentElement.setAttribute('data-theme', theme);
+        document.documentElement.setAttribute('data-panel-opacity', panelOpacity);
       })();
     </script>
 
@@ -34,6 +36,9 @@
   </select>
   <div class="spacer"></div>
   <span id="vertex-count"></span>
+  <button id="panel-opacity-toggle" class="theme-icon-btn" title="Make panels opaque" aria-label="Toggle panel opacity">
+    <img id="panel-opacity-toggle-icon" src="/panel_opaque_icon.svg" alt="">
+  </button>
   <button id="theme-toggle" class="theme-icon-btn" title="Toggle theme" aria-label="Toggle theme">
     <img id="theme-toggle-icon" src="/dark_icon.svg" alt="">
   </button>
