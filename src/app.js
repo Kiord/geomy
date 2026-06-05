@@ -353,9 +353,36 @@ function smoothImportedGeometry(geometry, { weldVertices = false } = {}) {
   return next;
 }
 
+function configureImportedMaterialTransparency(material) {
+  if (!material) return;
+
+  const materials = Array.isArray(material) ? material : [material];
+
+  materials.forEach(mat => {
+    if (!mat) return;
+
+    const hasAlphaMap = !!mat.alphaMap;
+    const hasAlphaTest = (mat.alphaTest || 0) > 0;
+    const hasBlendTransparency = mat.transparent || mat.opacity < 0.999;
+
+    if (hasAlphaMap || hasAlphaTest || hasBlendTransparency) {
+      // GLB/GLTF alpha can come from alphaMode=BLEND, alphaMode=MASK,
+      // or a dedicated alphaMap. Keep those semantics alive even when
+      // the visualization panel later rebuilds materials.
+      mat.transparent = hasAlphaMap || hasBlendTransparency;
+      mat.depthWrite = !(hasAlphaMap || hasBlendTransparency);
+      mat.needsUpdate = true;
+    }
+  });
+}
+
 function prepareObjectGeometry(object, { weldVertices = false } = {}) {
   object?.traverse?.(child => {
-    if (!child.isMesh || !child.geometry) return;
+    if (!child.isMesh) return;
+
+    configureImportedMaterialTransparency(child.material);
+
+    if (!child.geometry) return;
 
     const original = child.geometry;
     const prepared = smoothImportedGeometry(original, { weldVertices });
@@ -425,7 +452,10 @@ export function loadFile(file) {
   try {
     switch (ext) {
       case 'glb': case 'gltf':
-        loaders.gltf.load(url, g => addToScene(g.scene)); break;
+        loaders.gltf.load(url, g => {
+          prepareObjectGeometry(g.scene);
+          addToScene(g.scene);
+        }); break;
       case 'obj':
         loaders.obj.load(url, obj => {
           prepareObjectGeometry(obj, { weldVertices: true });

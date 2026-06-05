@@ -529,10 +529,22 @@ export function initVizPanel() {
     updateMaterialValueLabels();
   }
 
+  function hasIntrinsicTransparency(mat) {
+    return !!mat && (
+      mat.transparent ||
+      !!mat.alphaMap ||
+      (mat.alphaTest || 0) > 0 ||
+      mat.opacity < 0.999
+    );
+  }
+
   function makeCommonParams(oldMat, orig, useColorTexture, flatColorHex) {
     const opacity = oldMat?.opacity ?? orig?.opacity ?? 1;
-    const transparent = oldMat?.transparent ?? orig?.transparent ?? false;
     const colorMap = useColorTexture ? getTexture('map', orig) : null;
+    const alphaMap = useColorTexture ? (orig?.alphaMap || oldMat?.alphaMap || null) : null;
+    const alphaTest = orig?.alphaTest ?? oldMat?.alphaTest ?? 0;
+    const intrinsicTransparency = hasIntrinsicTransparency(orig) || hasIntrinsicTransparency(oldMat) || !!alphaMap;
+    const transparent = intrinsicTransparency || opacity < 0.999;
 
     return {
       color: useColorTexture
@@ -540,10 +552,13 @@ export function initVizPanel() {
         : flatColorHex,
 
       map: colorMap,
-      alphaMap: useColorTexture ? (orig?.alphaMap || null) : null,
+      alphaMap,
+      alphaTest,
 
       opacity,
-      transparent: transparent || opacity < 0.999,
+      transparent,
+      depthWrite: !transparent,
+      premultipliedAlpha: orig?.premultipliedAlpha ?? oldMat?.premultipliedAlpha ?? false,
       side: cullCheck?.checked ? THREE.FrontSide : THREE.DoubleSide,
     };
   }
@@ -794,21 +809,30 @@ export function initVizPanel() {
       return;
     }
 
-    const needsTransparency = val < 0.999;
+    const sliderTransparency = val < 0.999;
+    let anyTransparency = sliderTransparency;
 
     app.currentObject?.traverse(c => {
       if (!c.isMesh || !c.material) return;
 
-      getMaterialList(c.material).forEach(mat => {
+      const origList = getMaterialList(getOriginalMaterial(c));
+
+      getMaterialList(c.material).forEach((mat, index) => {
+        const orig = origList[index] || origList[0] || null;
+        const intrinsicTransparency = hasIntrinsicTransparency(orig) || !!mat.alphaMap || (mat.alphaTest || 0) > 0;
+        const transparent = sliderTransparency || intrinsicTransparency;
+
         mat.opacity = val;
-        mat.transparent = needsTransparency;
-        mat.depthWrite = !needsTransparency;
+        mat.transparent = transparent;
+        mat.depthWrite = !transparent;
         mat.needsUpdate = true;
+
+        anyTransparency = anyTransparency || transparent;
       });
     });
 
     if (app.renderer && transparencyMode === 'auto') {
-      app.renderer.sortObjects = needsTransparency;
+      app.renderer.sortObjects = anyTransparency;
     }
   }
 
