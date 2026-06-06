@@ -16,6 +16,9 @@ import { initGeometryInspection } from './panels/geometryInspection.js';
 function initSidePanelToggles() {
   const leftBtn = document.getElementById('toggle-task-panel');
   const rightBtn = document.getElementById('toggle-viz-panel');
+  const leftPanel = document.getElementById('task-panel');
+  const rightPanel = document.getElementById('viz-panel');
+  let lastExpandedSide = localStorage.getItem('geomy-last-expanded-panel') || 'left';
 
   function syncButton(button, collapsed, side) {
     if (!button) return;
@@ -31,29 +34,72 @@ function initSidePanelToggles() {
     button.setAttribute('aria-expanded', String(!collapsed));
   }
 
-  function setCollapsed(side, collapsed) {
+  function isCollapsed(side) {
+    return document.body.classList.contains(side === 'left' ? 'panel-left-collapsed' : 'panel-right-collapsed');
+  }
+
+  function panelWidth(panel) {
+    if (!panel) return 0;
+
+    const rectWidth = panel.getBoundingClientRect().width;
+    if (rectWidth > 1) return rectWidth;
+
+    const cssWidth = parseFloat(getComputedStyle(panel).width);
+    return Number.isFinite(cssWidth) ? cssWidth : 0;
+  }
+
+  function panelsWouldOverlap() {
+    const leftWidth = isCollapsed('left') ? 0 : panelWidth(leftPanel);
+    const rightWidth = isCollapsed('right') ? 0 : panelWidth(rightPanel);
+    const toggleBreathingRoom = 48;
+
+    return leftWidth + rightWidth + toggleBreathingRoom > window.innerWidth;
+  }
+
+  function setCollapsed(side, collapsed, { resolveOverlap = true } = {}) {
     const className = side === 'left' ? 'panel-left-collapsed' : 'panel-right-collapsed';
     document.body.classList.toggle(className, collapsed);
     localStorage.setItem(`geomy-${side}-panel-collapsed`, collapsed ? '1' : '0');
     syncButton(side === 'left' ? leftBtn : rightBtn, collapsed, side);
 
+    if (!collapsed) {
+      lastExpandedSide = side;
+      localStorage.setItem('geomy-last-expanded-panel', side);
+    }
+
+    if (resolveOverlap && !collapsed && panelsWouldOverlap()) {
+      setCollapsed(side === 'left' ? 'right' : 'left', true, { resolveOverlap: false });
+    }
+
     // Panels overlay the full-width viewport, so toggling them must not resize
     // the canvas or touch the camera. This keeps the rendered object fixed on screen.
+  }
+
+  function resolveCurrentOverlap() {
+    if (!panelsWouldOverlap()) return;
+
+    // On narrow/portrait screens, keep the panel the user opened most recently
+    // and auto-collapse the opposite one before the drawers can cover each other.
+    setCollapsed(lastExpandedSide === 'left' ? 'right' : 'left', true, { resolveOverlap: false });
   }
 
   const leftCollapsed = localStorage.getItem('geomy-left-panel-collapsed') === '1';
   const rightCollapsed = localStorage.getItem('geomy-right-panel-collapsed') === '1';
 
-  setCollapsed('left', leftCollapsed);
-  setCollapsed('right', rightCollapsed);
+  setCollapsed('left', leftCollapsed, { resolveOverlap: false });
+  setCollapsed('right', rightCollapsed, { resolveOverlap: false });
+  requestAnimationFrame(resolveCurrentOverlap);
 
   leftBtn?.addEventListener('click', () => {
-    setCollapsed('left', !document.body.classList.contains('panel-left-collapsed'));
+    setCollapsed('left', !isCollapsed('left'));
   });
 
   rightBtn?.addEventListener('click', () => {
-    setCollapsed('right', !document.body.classList.contains('panel-right-collapsed'));
+    setCollapsed('right', !isCollapsed('right'));
   });
+
+  window.addEventListener('resize', resolveCurrentOverlap);
+  window.addEventListener('orientationchange', () => requestAnimationFrame(resolveCurrentOverlap));
 }
 
 // ── Boot ──

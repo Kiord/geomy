@@ -291,8 +291,9 @@ body.panel-right-collapsed .panel-toggle-right {
   display: block;
 }
 
-/* mall viewport layout.
-   Keep the WebGL viewport full-width */
+/* Landscape-phone / small viewport layout.
+   Keep the WebGL viewport full-width and make side panels behave like instant
+   slide-over drawers so the canvas does not become too narrow on phones. */
 @media (max-width: 900px), (max-height: 520px) {
   body {
     --left-panel-width: min(82vw, 320px);
