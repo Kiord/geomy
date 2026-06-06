@@ -14,6 +14,7 @@ import { initVizPanel } from './panels/visualization.js';
 import { initGeometryInspection } from './panels/geometryInspection.js';
 
 function initSidePanelToggles() {
+  const topBtn = document.getElementById('toggle-topbar');
   const leftBtn = document.getElementById('toggle-task-panel');
   const rightBtn = document.getElementById('toggle-viz-panel');
   const leftPanel = document.getElementById('task-panel');
@@ -23,18 +24,24 @@ function initSidePanelToggles() {
   function syncButton(button, collapsed, side) {
     if (!button) return;
 
-    const isLeft = side === 'left';
-    const label = `${collapsed ? 'Expand' : 'Collapse'} ${side} panel`;
+    const label = `${collapsed ? 'Expand' : 'Collapse'} ${side === 'top' ? 'top bar' : `${side} panel`}`;
 
-    button.textContent = isLeft
-      ? (collapsed ? '›' : '‹')
-      : (collapsed ? '‹' : '›');
+    if (side === 'top') {
+      button.textContent = '';
+    } else {
+      const isLeft = side === 'left';
+      button.textContent = isLeft
+        ? (collapsed ? '›' : '‹')
+        : (collapsed ? '‹' : '›');
+    }
+
     button.title = label;
     button.setAttribute('aria-label', label);
     button.setAttribute('aria-expanded', String(!collapsed));
   }
 
   function isCollapsed(side) {
+    if (side === 'top') return document.body.classList.contains('panel-top-collapsed');
     return document.body.classList.contains(side === 'left' ? 'panel-left-collapsed' : 'panel-right-collapsed');
   }
 
@@ -57,22 +64,25 @@ function initSidePanelToggles() {
   }
 
   function setCollapsed(side, collapsed, { resolveOverlap = true } = {}) {
-    const className = side === 'left' ? 'panel-left-collapsed' : 'panel-right-collapsed';
+    const className = side === 'top'
+      ? 'panel-top-collapsed'
+      : (side === 'left' ? 'panel-left-collapsed' : 'panel-right-collapsed');
     document.body.classList.toggle(className, collapsed);
     localStorage.setItem(`geomy-${side}-panel-collapsed`, collapsed ? '1' : '0');
-    syncButton(side === 'left' ? leftBtn : rightBtn, collapsed, side);
+    syncButton(side === 'top' ? topBtn : (side === 'left' ? leftBtn : rightBtn), collapsed, side);
 
-    if (!collapsed) {
+    if (!collapsed && side !== 'top') {
       lastExpandedSide = side;
       localStorage.setItem('geomy-last-expanded-panel', side);
     }
 
-    if (resolveOverlap && !collapsed && panelsWouldOverlap()) {
+    if (resolveOverlap && side !== 'top' && !collapsed && panelsWouldOverlap()) {
       setCollapsed(side === 'left' ? 'right' : 'left', true, { resolveOverlap: false });
     }
 
-    // Panels overlay the full-width viewport, so toggling them must not resize
-    // the canvas or touch the camera. This keeps the rendered object fixed on screen.
+    // Panels and the top bar overlay the full-screen viewport, so toggling them
+    // must not resize the canvas or touch the camera. This keeps the rendered
+    // object fixed on screen.
   }
 
   function resolveCurrentOverlap() {
@@ -83,12 +93,18 @@ function initSidePanelToggles() {
     setCollapsed(lastExpandedSide === 'left' ? 'right' : 'left', true, { resolveOverlap: false });
   }
 
+  const topCollapsed = localStorage.getItem('geomy-top-panel-collapsed') === '1';
   const leftCollapsed = localStorage.getItem('geomy-left-panel-collapsed') === '1';
   const rightCollapsed = localStorage.getItem('geomy-right-panel-collapsed') === '1';
 
+  setCollapsed('top', topCollapsed, { resolveOverlap: false });
   setCollapsed('left', leftCollapsed, { resolveOverlap: false });
   setCollapsed('right', rightCollapsed, { resolveOverlap: false });
   requestAnimationFrame(resolveCurrentOverlap);
+
+  topBtn?.addEventListener('click', () => {
+    setCollapsed('top', !isCollapsed('top'));
+  });
 
   leftBtn?.addEventListener('click', () => {
     setCollapsed('left', !isCollapsed('left'));
