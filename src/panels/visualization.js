@@ -25,6 +25,7 @@ const DEFAULT_MATERIAL_VALUES = {
   emissiveColor: '#ffffff',
   emissiveIntensity: 0,
   emissiveMapIntensity: 1,
+  alphaIntensity: 1,
 };
 
 
@@ -64,6 +65,7 @@ export function initVizPanel() {
     metalnessMap: null,
     aoMap: null,
     emissiveMap: null,
+    alphaMap: null,
   };
 
   const materialInputs = {
@@ -73,6 +75,7 @@ export function initVizPanel() {
     metalnessMap: document.getElementById('mat-metalness-map'),
     aoMap: document.getElementById('mat-ao-map'),
     emissiveMap: document.getElementById('mat-emissive-map'),
+    alphaMap: document.getElementById('mat-alpha-map'),
 
     normalStrength: document.getElementById('mat-normal-strength'),
     roughness: document.getElementById('mat-roughness'),
@@ -80,6 +83,7 @@ export function initVizPanel() {
     aoIntensity: document.getElementById('mat-ao-intensity'),
     emissiveColor: document.getElementById('mat-emissive-color'),
     emissiveIntensity: document.getElementById('mat-emissive-intensity'),
+    alphaIntensity: document.getElementById('mat-alpha-intensity'),
   };
 
   function initCollapsibleSections() {
@@ -372,6 +376,7 @@ export function initVizPanel() {
       ['metalness', 'mat-metalness-val'],
       ['aoIntensity', 'mat-ao-intensity-val'],
       ['emissiveIntensity', 'mat-emissive-intensity-val'],
+      ['alphaIntensity', 'mat-alpha-intensity-val'],
     ];
 
     labels.forEach(([inputKey, labelId]) => {
@@ -524,6 +529,7 @@ export function initVizPanel() {
     setInputValue(materialInputs.roughness, DEFAULT_MATERIAL_VALUES.roughness);
     setInputValue(materialInputs.metalness, DEFAULT_MATERIAL_VALUES.metalness);
     setInputValue(materialInputs.aoIntensity, DEFAULT_MATERIAL_VALUES.aoIntensity);
+    setInputValue(materialInputs.alphaIntensity, DEFAULT_MATERIAL_VALUES.alphaIntensity);
     syncEmissiveDefaultsForMap();
 
     updateMaterialValueLabels();
@@ -541,7 +547,11 @@ export function initVizPanel() {
   function makeCommonParams(oldMat, orig, useColorTexture, flatColorHex) {
     const opacity = oldMat?.opacity ?? orig?.opacity ?? 1;
     const colorMap = useColorTexture ? getTexture('map', orig) : null;
-    const alphaMap = useColorTexture ? (orig?.alphaMap || oldMat?.alphaMap || null) : null;
+    const alphaMap = getTexture('alphaMap', orig) || oldMat?.alphaMap || null;
+    const alphaMapIntensity = getNumber(
+      materialInputs.alphaIntensity,
+      orig?.userData?.alphaMapIntensity ?? oldMat?.userData?.alphaMapIntensity ?? DEFAULT_MATERIAL_VALUES.alphaIntensity
+    );
     const alphaTest = orig?.alphaTest ?? oldMat?.alphaTest ?? 0;
     const intrinsicTransparency = hasIntrinsicTransparency(orig) || hasIntrinsicTransparency(oldMat) || !!alphaMap;
     const transparent = intrinsicTransparency || opacity < 0.999;
@@ -554,6 +564,10 @@ export function initVizPanel() {
       map: colorMap,
       alphaMap,
       alphaTest,
+      userData: {
+        ...(orig?.userData || {}),
+        alphaMapIntensity,
+      },
 
       opacity,
       transparent,
@@ -646,26 +660,88 @@ export function initVizPanel() {
     return params;
   }
 
+  function alphaMapIntensityForMaterial(mat) {
+    return getNumber(
+      materialInputs.alphaIntensity,
+      mat?.userData?.alphaMapIntensity ?? DEFAULT_MATERIAL_VALUES.alphaIntensity
+    );
+  }
+
+  function applyAlphaMapIntensityPatch(mat) {
+    const hasOpacityTexture = !!mat?.alphaMap || (!!mat?.map && (mat.transparent || (mat.alphaTest || 0) > 0));
+    if (!hasOpacityTexture) return mat;
+
+    const intensity = alphaMapIntensityForMaterial(mat);
+    mat.userData = { ...(mat.userData || {}), alphaMapIntensity: intensity };
+
+    mat.onBeforeCompile = shader => {
+      shader.uniforms.alphaMapIntensity = { value: mat.userData.alphaMapIntensity ?? 1 };
+
+      const mapReplacement = `
+#ifdef USE_MAP
+	vec4 sampledDiffuseColor = texture2D(map, vMapUv);
+
+	#ifdef DECODE_VIDEO_TEXTURE
+		sampledDiffuseColor = sRGBTransferEOTF(sampledDiffuseColor);
+	#endif
+
+	diffuseColor.rgb *= sampledDiffuseColor.rgb;
+	diffuseColor.a *= clamp(mix(1.0, sampledDiffuseColor.a, alphaMapIntensity), 0.0, 1.0);
+#endif
+`;
+
+      const alphaMapReplacement = `
+#ifdef USE_ALPHAMAP
+	diffuseColor.a *= clamp(mix(1.0, texture2D(alphaMap, vAlphaMapUv).g, alphaMapIntensity), 0.0, 1.0);
+#endif
+`;
+
+      shader.fragmentShader = `uniform float alphaMapIntensity;\n${shader.fragmentShader}`
+        .replace('#include <map_fragment>', mapReplacement)
+        .replace('#include <alphamap_fragment>', alphaMapReplacement)
+        .replace(/diffuseColor\.a \*= texture2D\( alphaMap, vAlphaMapUv \)\.g;/g, alphaMapReplacement);
+    };
+
+    mat.customProgramCacheKey = () => `alphaMapIntensity:${mat.userData.alphaMapIntensity ?? 1}`;
+    mat.needsUpdate = true;
+    return mat;
+  }
+
   function makeNormalGradientMaterial(common) {
+    const hasAlphaMap = !!common.alphaMap;
     const mat = new THREE.ShaderMaterial({
       uniforms: {
         opacity: { value: common.opacity },
+        alphaMap: { value: common.alphaMap || null },
+        alphaMapIntensity: { value: common.userData?.alphaMapIntensity ?? DEFAULT_MATERIAL_VALUES.alphaIntensity },
       },
       vertexShader: `
+        varying vec2 vUv;
         varying vec3 vWorldNormal;
 
         void main() {
+          vUv = uv;
           vWorldNormal = normalize(mat3(modelMatrix) * normal);
           gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
         }
       `,
       fragmentShader: `
         uniform float opacity;
+        uniform sampler2D alphaMap;
+        uniform float alphaMapIntensity;
+        varying vec2 vUv;
         varying vec3 vWorldNormal;
 
         void main() {
           vec3 n = normalize(vWorldNormal);
-          gl_FragColor = vec4(n * 0.5 + 0.5, opacity);
+          float a = opacity;
+
+          if (${hasAlphaMap ? 'true' : 'false'}) {
+            float mapAlpha = texture2D(alphaMap, vUv).g;
+            a *= clamp(mix(1.0, mapAlpha, alphaMapIntensity), 0.0, 1.0);
+          }
+
+          gl_FragColor = vec4(n * 0.5 + 0.5, a);
         }
       `,
       transparent: common.transparent,
@@ -673,6 +749,8 @@ export function initVizPanel() {
       side: common.side,
     });
 
+    mat.alphaMap = common.alphaMap || null;
+    mat.userData = { ...(common.userData || {}) };
     mat.depthWrite = !common.transparent;
     return mat;
   }
@@ -758,7 +836,9 @@ export function initVizPanel() {
         const orig = origList[i] || origList[0] || null;
         const oldMat = oldList[i] || oldList[0] || null;
         const wasWireframe = oldMat?.wireframe ?? false;
-        const nextMat = buildMaterialForMode(mode, oldMat, orig, c, useColorTexture, flatColorHex);
+        const nextMat = applyAlphaMapIntensityPatch(
+          buildMaterialForMode(mode, oldMat, orig, c, useColorTexture, flatColorHex)
+        );
 
         nextMat.wireframe = wasWireframe;
 
@@ -898,6 +978,7 @@ export function initVizPanel() {
     metalnessMap: materialInputs.metalnessMap,
     aoMap: materialInputs.aoMap,
     emissiveMap: materialInputs.emissiveMap,
+    alphaMap: materialInputs.alphaMap,
   }).forEach(([slot, input]) => {
     input?.addEventListener('change', () => {
       loadTextureFromInput(input, slot);
@@ -916,6 +997,7 @@ export function initVizPanel() {
     materialInputs.metalness,
     materialInputs.aoIntensity,
     materialInputs.emissiveIntensity,
+    materialInputs.alphaIntensity,
   ].forEach(input => {
     input?.addEventListener('input', applyMaterialProperties);
   });

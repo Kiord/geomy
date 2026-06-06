@@ -33,7 +33,7 @@ const TEXTURE_SLOTS = [
   ['metalnessMap', 'Metalness'],
   ['aoMap', 'Ambient Occlusion'],
   ['emissiveMap', 'Emissive'],
-  ['alphaMap', 'Alpha'],
+  ['alphaMap', 'Opacity'],
   ['bumpMap', 'Bump'],
   ['displacementMap', 'Displacement'],
   ['lightMap', 'Light'],
@@ -193,6 +193,22 @@ function computeStats() {
             previewSrc: texturePreviewSrc(texture),
           });
         });
+
+        if (!mat.alphaMap && mat.map?.image && (mat.transparent || (mat.alphaTest || 0) > 0 || mat.opacity < 0.999)) {
+          const baseName = textureLabel(mat, 'map', 'Opacity', mat.map);
+          let uniqueName = baseName;
+          let id = 1;
+
+          while (textures.has(uniqueName) && textures.get(uniqueName).texture !== mat.map) {
+            uniqueName = `${baseName} ${id++}`;
+          }
+
+          textures.set(uniqueName, {
+            label: uniqueName,
+            texture: mat.map,
+            previewSrc: texturePreviewSrc(mat.map),
+          });
+        }
       });
     });
   });
@@ -295,3 +311,4 @@ export const inpectTask = {
   }
 
 };
+

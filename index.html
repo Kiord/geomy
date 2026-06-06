@@ -233,6 +233,25 @@
             <input type="range" id="mat-emissive-intensity" min="0" max="10" step="0.01" value="0">
           </div>
 
+          <div class="material-property" data-visible-modes="unlit lambert pbr normal">
+            <div class="material-property-head">
+              <span>Opacity</span>
+              <span class="material-mode-badge">All modes</span>
+            </div>
+
+            <div class="material-row material-row-file">
+              <label>Map</label>
+              <input type="file" id="mat-alpha-map" accept="image/*">
+              <button type="button" class="btn btn-mini" data-clear-texture="alphaMap" title="Clear opacity map">×</button>
+            </div>
+
+            <div class="range-row material-range-row">
+              <label>Intensity</label>
+              <span class="range-val" id="mat-alpha-intensity-val">1.00</span>
+            </div>
+            <input type="range" id="mat-alpha-intensity" min="0" max="3" step="0.01" value="1">
+          </div>
+
           <label>Mesh Opacity</label>
           <span class="range-val" id="opacity-val">100%</span>
           <input type="range" id="viz-opacity" min="0" max="100" value="100">
