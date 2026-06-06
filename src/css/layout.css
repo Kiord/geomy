@@ -290,3 +290,131 @@ body.panel-right-collapsed .panel-toggle-right {
   height: 24px;
   display: block;
 }
+
+/* mall viewport layout.
+   Keep the WebGL viewport full-width */
+@media (max-width: 900px), (max-height: 520px) {
+  body {
+    --left-panel-width: min(82vw, 320px);
+    --right-panel-width: min(82vw, 320px);
+    grid-template-rows: 40px 1fr;
+    min-width: 0;
+  }
+
+  #topbar {
+    min-width: 0;
+    padding: 0 0.45rem;
+    gap: 0.45rem;
+    overflow-x: auto;
+    overflow-y: hidden;
+    scrollbar-width: none;
+  }
+
+  #topbar::-webkit-scrollbar {
+    display: none;
+  }
+
+  #topbar .logo {
+    flex: 0 0 auto;
+  }
+
+  #topbar .sep,
+  #topbar label {
+    display: none;
+  }
+
+  #topbar select {
+    flex: 1 1 auto;
+    min-width: 8rem;
+    max-width: 12.5rem;
+    padding: 0.28rem 0.45rem;
+    font-size: 0.78rem;
+  }
+
+  #topbar #vertex-count {
+    display: none;
+  }
+
+  .theme-icon-btn,
+  #theme-toggle,
+  #panel-opacity-toggle {
+    flex: 0 0 auto;
+    width: 32px;
+    height: 32px;
+    padding: 0.25rem;
+  }
+
+  #task-panel,
+  #viz-panel {
+    position: fixed;
+    top: 40px;
+    bottom: 0;
+    align-self: auto;
+    width: var(--left-panel-width);
+    max-width: calc(100vw - 38px);
+    padding: 0.65rem;
+    z-index: 50;
+    overscroll-behavior: contain;
+  }
+
+  #task-panel {
+    left: 0;
+    right: auto;
+  }
+
+  #viz-panel {
+    left: auto;
+    right: 0;
+    width: var(--right-panel-width);
+  }
+
+  body.panel-left-collapsed #task-panel,
+  body.panel-right-collapsed #viz-panel {
+    width: 0;
+    padding-left: 0;
+    padding-right: 0;
+    visibility: hidden;
+  }
+
+  #viewport {
+    min-width: 0;
+    min-height: 0;
+  }
+
+  .panel-toggle {
+    top: calc(40px + (100vh - 40px) * 0.5);
+    z-index: 70;
+    width: 28px;
+    height: 56px;
+    font-size: 1.25rem;
+    background: var(--panel-bg-focus);
+  }
+
+  .panel-toggle-left {
+    left: calc(var(--left-panel-active-width) + 6px);
+  }
+
+  body.panel-left-collapsed .panel-toggle-left {
+    left: 6px;
+  }
+
+  .panel-toggle-right {
+    right: calc(var(--right-panel-active-width) + 6px);
+  }
+
+  body.panel-right-collapsed .panel-toggle-right {
+    right: 6px;
+  }
+
+  #fps-counter {
+    top: 8px;
+    left: calc(var(--left-panel-active-width) + 8px);
+    font-size: 0.66rem;
+  }
+
+  #drop-message {
+    max-width: min(78vw, 22rem);
+    padding: 16px 22px;
+    font-size: 1rem;
+  }
+}
