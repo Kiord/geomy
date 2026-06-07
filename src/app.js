@@ -338,16 +338,23 @@ function smoothImportedGeometry(geometry, { weldVertices = false } = {}) {
   if (!geometry?.attributes?.position) return geometry;
 
   let next = geometry;
+  const hadImportedNormals = !!geometry.attributes.normal;
 
   if (weldVertices) {
-    // OBJ often expands the same position into many vertices because OBJ has
-    // independent position/uv/normal indices. Dropping imported normals before
-    // welding lets Smooth Shading build continuous normals again where UVs allow.
-    next.deleteAttribute?.('normal');
+    // Preserve authored/imported vertex normals when they exist. If normals are
+    // part of the imported asset, they are usually the artist/tool's intended
+    // smoothing data and should not be replaced by computed normals.
     next = mergeVertices(next, 1e-5);
   }
 
-  next.computeVertexNormals?.();
+  // Only generate normals for formats/assets that do not provide them. Three's
+  // computeVertexNormals() gives fully interpolated vertex normals; there is no
+  // angle threshold here, so generated normals are as smooth as the topology
+  // allows. Imported normals always win.
+  if (!hadImportedNormals && !next.attributes.normal) {
+    next.computeVertexNormals?.();
+  }
+
   next.computeBoundingBox?.();
   next.computeBoundingSphere?.();
   return next;
