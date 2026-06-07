@@ -494,3 +494,31 @@ body.panel-top-collapsed .topbar-toggle {
     font-size: 1rem;
   }
 }
+
+/* Inline helper color pickers in the Display panel. */
+.display-color-picker {
+  flex: 0 0 auto;
+  width: 22px;
+  height: 18px;
+  margin-left: auto;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+  cursor: pointer;
+}
+
+.display-color-picker::-webkit-color-swatch-wrapper {
+  padding: 0;
+}
+
+.display-color-picker::-webkit-color-swatch {
+  border: none;
+  border-radius: 0;
+}
+
+.display-color-picker::-moz-color-swatch {
+  border: none;
+  border-radius: 0;
+}

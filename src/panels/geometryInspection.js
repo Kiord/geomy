@@ -3,16 +3,20 @@ import { app } from '../app.js';
 
 const GEOMETRY_MARKER_RADIUS = 0.002;
 const DEFAULT_GEOMETRY_COLOR = '#ff8c00';
+const DEFAULT_GEOMETRY_COLORS = Object.freeze({
+  vertices: DEFAULT_GEOMETRY_COLOR,
+  edges: DEFAULT_GEOMETRY_COLOR,
+  faces: DEFAULT_GEOMETRY_COLOR,
+});
 
 let vertexGroup = null;
 let edgeGroup = null;
 let faceGroup = null;
 
 const settings = {
-  vertices: { show: false },
-  edges: { show: false },
-  faces: { show: false },
-  color: DEFAULT_GEOMETRY_COLOR,
+  vertices: { show: false, color: DEFAULT_GEOMETRY_COLORS.vertices },
+  edges: { show: false, color: DEFAULT_GEOMETRY_COLORS.edges },
+  faces: { show: false, color: DEFAULT_GEOMETRY_COLORS.faces },
 };
 
 function isVisibleInCurrentHierarchy(object) {
@@ -87,9 +91,9 @@ function setGroupMaterialsColor(group, color) {
   });
 }
 
-function makeMarkerMaterial() {
+function makeMarkerMaterial(color) {
   const mat = new THREE.MeshBasicMaterial({
-    color: settings.color,
+    color,
     depthTest: true,
     depthWrite: false,
   });
@@ -98,9 +102,9 @@ function makeMarkerMaterial() {
   return mat;
 }
 
-function makeLineMaterial() {
+function makeLineMaterial(color) {
   const mat = new THREE.LineBasicMaterial({
-    color: settings.color,
+    color,
     depthTest: true,
     depthWrite: false,
   });
@@ -127,7 +131,7 @@ function buildVertices() {
 
     const localToWorld = mesh.matrixWorld.clone();
     const geometry = new THREE.SphereGeometry(1, 6, 4);
-    const material = makeMarkerMaterial();
+    const material = makeMarkerMaterial(settings.vertices.color);
     const markers = new THREE.InstancedMesh(geometry, material, pos.count);
     const dummy = new THREE.Object3D();
 
@@ -161,7 +165,7 @@ function buildEdges() {
     if (!mesh.isMesh || !isVisibleInCurrentHierarchy(mesh) || !mesh.geometry?.attributes?.position) return;
 
     const edgesGeometry = new THREE.EdgesGeometry(mesh.geometry, 0);
-    const material = makeLineMaterial();
+    const material = makeLineMaterial(settings.edges.color);
     const lines = new THREE.LineSegments(edgesGeometry, material);
 
     lines.applyMatrix4(mesh.matrixWorld.clone());
@@ -206,7 +210,7 @@ function buildFaces() {
     if (!centers.length) return;
 
     const geometry = new THREE.SphereGeometry(1, 6, 4);
-    const material = makeMarkerMaterial();
+    const material = makeMarkerMaterial(settings.faces.color);
     const markers = new THREE.InstancedMesh(geometry, material, centers.length);
     const dummy = new THREE.Object3D();
 
@@ -236,12 +240,17 @@ function clearAll() {
   clearFaces();
 }
 
-function applySharedColor(color) {
-  settings.color = color || DEFAULT_GEOMETRY_COLOR;
+function applyGeometryColor(kind, color) {
+  const fallback = DEFAULT_GEOMETRY_COLORS[kind] || DEFAULT_GEOMETRY_COLOR;
+  const next = color || fallback;
 
-  setGroupMaterialsColor(vertexGroup, settings.color);
-  setGroupMaterialsColor(edgeGroup, settings.color);
-  setGroupMaterialsColor(faceGroup, settings.color);
+  if (!settings[kind]) return;
+
+  settings[kind].color = next;
+
+  if (kind === 'vertices') setGroupMaterialsColor(vertexGroup, next);
+  if (kind === 'edges') setGroupMaterialsColor(edgeGroup, next);
+  if (kind === 'faces') setGroupMaterialsColor(faceGroup, next);
 }
 
 // ── Init ──
@@ -249,10 +258,20 @@ export function initGeometryInspection() {
   const vertCheck = document.getElementById('geo-vertices');
   const edgeCheck = document.getElementById('geo-edges');
   const faceCheck = document.getElementById('geo-faces');
-  const colorInput = document.getElementById('geo-pick-color');
+  const vertColorInput = document.getElementById('geo-vertices-color');
+  const edgeColorInput = document.getElementById('geo-edges-color');
+  const faceColorInput = document.getElementById('geo-faces-color');
 
-  colorInput?.addEventListener('input', () => {
-    applySharedColor(colorInput.value);
+  vertColorInput?.addEventListener('input', () => {
+    applyGeometryColor('vertices', vertColorInput.value);
+  });
+
+  edgeColorInput?.addEventListener('input', () => {
+    applyGeometryColor('edges', edgeColorInput.value);
+  });
+
+  faceColorInput?.addEventListener('input', () => {
+    applyGeometryColor('faces', faceColorInput.value);
   });
 
   vertCheck?.addEventListener('change', () => {
@@ -282,12 +301,16 @@ export function initGeometryInspection() {
       if (vertCheck) vertCheck.checked = false;
       if (edgeCheck) edgeCheck.checked = false;
       if (faceCheck) faceCheck.checked = false;
-      if (colorInput) colorInput.value = DEFAULT_GEOMETRY_COLOR;
+      if (vertColorInput) vertColorInput.value = DEFAULT_GEOMETRY_COLORS.vertices;
+      if (edgeColorInput) edgeColorInput.value = DEFAULT_GEOMETRY_COLORS.edges;
+      if (faceColorInput) faceColorInput.value = DEFAULT_GEOMETRY_COLORS.faces;
 
       settings.vertices.show = false;
       settings.edges.show = false;
       settings.faces.show = false;
-      settings.color = DEFAULT_GEOMETRY_COLOR;
+      settings.vertices.color = DEFAULT_GEOMETRY_COLORS.vertices;
+      settings.edges.color = DEFAULT_GEOMETRY_COLORS.edges;
+      settings.faces.color = DEFAULT_GEOMETRY_COLORS.faces;
     },
 
     // Kept as a no-op because main.js calls this every frame.

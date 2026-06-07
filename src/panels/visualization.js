@@ -17,6 +17,18 @@ let transparencyMode = 'auto';
 let currentNormalType = 'smooth'; // 'smooth' or 'flat'
 let lambertLights = [];
 
+
+const DEFAULT_DISPLAY_COLORS = Object.freeze({
+  normals: '#00ffcc',
+  vertices: '#ff8c00',
+  edges: '#ff8c00',
+  faces: '#ff8c00',
+  bbox: '#ffff00',
+  grid: '#333333',
+});
+
+const displayColors = { ...DEFAULT_DISPLAY_COLORS };
+
 const DEFAULT_MATERIAL_VALUES = {
   normalStrength: 1,
   roughness: 0.4,
@@ -108,7 +120,112 @@ export function initVizPanel() {
     });
   }
 
+
+  function getDisplayColor(kind) {
+    return displayColors[kind] || DEFAULT_DISPLAY_COLORS[kind] || '#ffffff';
+  }
+
+  function setColorInputValueRaw(input, color) {
+    if (input) input.value = color;
+  }
+
+  function ensureDisplayColorPicker({ checkboxId, colorId, defaultColor, title, onInput }) {
+    const checkbox = document.getElementById(checkboxId);
+    const label = checkbox?.closest('label');
+    if (!checkbox || !label) return null;
+
+    let input = document.getElementById(colorId);
+
+    if (!input) {
+      input = document.createElement('input');
+      input.type = 'color';
+      input.id = colorId;
+      input.className = 'display-color-picker';
+      input.title = title;
+      input.setAttribute('aria-label', title);
+      label.appendChild(input);
+    }
+
+    input.value = defaultColor;
+
+    ['click', 'pointerdown', 'mousedown', 'touchstart'].forEach(eventName => {
+      input.addEventListener(eventName, event => event.stopPropagation());
+    });
+
+    input.addEventListener('input', () => {
+      onInput(input.value);
+    });
+
+    return input;
+  }
+
+  function ensureDisplayColorPickers() {
+    ensureDisplayColorPicker({
+      checkboxId: 'viz-normals',
+      colorId: 'viz-normals-color',
+      defaultColor: DEFAULT_DISPLAY_COLORS.normals,
+      title: 'Vertex normals color',
+      onInput: color => {
+        displayColors.normals = color;
+        if (normCheck?.checked) toggleNormals(true);
+      },
+    });
+
+    ensureDisplayColorPicker({
+      checkboxId: 'geo-vertices',
+      colorId: 'geo-vertices-color',
+      defaultColor: DEFAULT_DISPLAY_COLORS.vertices,
+      title: 'Vertices color',
+      onInput: color => {
+        displayColors.vertices = color;
+      },
+    });
+
+    ensureDisplayColorPicker({
+      checkboxId: 'geo-edges',
+      colorId: 'geo-edges-color',
+      defaultColor: DEFAULT_DISPLAY_COLORS.edges,
+      title: 'Edges color',
+      onInput: color => {
+        displayColors.edges = color;
+      },
+    });
+
+    ensureDisplayColorPicker({
+      checkboxId: 'geo-faces',
+      colorId: 'geo-faces-color',
+      defaultColor: DEFAULT_DISPLAY_COLORS.faces,
+      title: 'Face centers color',
+      onInput: color => {
+        displayColors.faces = color;
+      },
+    });
+
+    ensureDisplayColorPicker({
+      checkboxId: 'viz-bbox',
+      colorId: 'viz-bbox-color',
+      defaultColor: DEFAULT_DISPLAY_COLORS.bbox,
+      title: 'Bounding box color',
+      onInput: color => {
+        displayColors.bbox = color;
+        updateBoundingBoxColor();
+      },
+    });
+
+    ensureDisplayColorPicker({
+      checkboxId: 'viz-grid',
+      colorId: 'viz-grid-color',
+      defaultColor: DEFAULT_DISPLAY_COLORS.grid,
+      title: 'Grid color',
+      onInput: color => {
+        displayColors.grid = color;
+        updateGridColor();
+      },
+    });
+  }
+
   initCollapsibleSections();
+  ensureDisplayColorPickers();
 
   currentNormalType = smoothShadingCheck?.checked ? 'smooth' : 'flat';
 
@@ -233,6 +350,36 @@ export function initVizPanel() {
     });
 
     return gridHelper;
+  }
+
+
+  function updateGridColor() {
+    const grid = findGrid();
+    if (!grid) return;
+
+    const color = new THREE.Color(getDisplayColor('grid'));
+
+    // THREE.GridHelper stores its line colors in a per-vertex `color`
+    // attribute, so changing only material.color has no visible effect.
+    const colorAttr = grid.geometry?.getAttribute?.('color');
+    if (colorAttr) {
+      for (let i = 0; i < colorAttr.count; i++) {
+        colorAttr.setXYZ(i, color.r, color.g, color.b);
+      }
+      colorAttr.needsUpdate = true;
+    }
+
+    [].concat(grid.material || []).forEach(mat => {
+      if (mat?.color) mat.color.copy(color);
+      mat.needsUpdate = true;
+    });
+  }
+
+  function updateBoundingBoxColor() {
+    if (!bboxHelper?.material?.color) return;
+
+    bboxHelper.material.color.set(getDisplayColor('bbox'));
+    bboxHelper.material.needsUpdate = true;
   }
 
   function isVisibleInCurrentHierarchy(object) {
@@ -1004,7 +1151,7 @@ export function initVizPanel() {
 
     meshes.forEach(mesh => {
       try {
-        const helper = new VertexNormalsHelper(mesh, len, 0x00ffcc);
+        const helper = new VertexNormalsHelper(mesh, len, new THREE.Color(getDisplayColor('normals')).getHex());
         app.scene.add(helper);
         normalsHelpers.push(helper);
       } catch (e) {
@@ -1015,7 +1162,10 @@ export function initVizPanel() {
 
   function toggleGrid(show) {
     const grid = findGrid();
-    if (grid) grid.visible = show;
+    if (grid) {
+      if (show) updateGridColor();
+      grid.visible = show;
+    }
   }
 
   // ── Listeners ──
@@ -1130,10 +1280,11 @@ export function initVizPanel() {
 
     if (bboxCheck.checked) {
       if (!bboxHelper) {
-        bboxHelper = new THREE.BoxHelper(app.currentObject, 0xffff00);
+        bboxHelper = new THREE.BoxHelper(app.currentObject, new THREE.Color(getDisplayColor('bbox')).getHex());
         app.scene.add(bboxHelper);
       }
 
+      updateBoundingBoxColor();
       bboxHelper.visible = true;
     } else if (bboxHelper) {
       bboxHelper.visible = false;
@@ -1218,6 +1369,15 @@ export function initVizPanel() {
         gridCheck.checked = false;
         toggleGrid(false);
       }
+
+
+      Object.assign(displayColors, DEFAULT_DISPLAY_COLORS);
+      setColorInputValueRaw(document.getElementById('viz-normals-color'), DEFAULT_DISPLAY_COLORS.normals);
+      setColorInputValueRaw(document.getElementById('geo-vertices-color'), DEFAULT_DISPLAY_COLORS.vertices);
+      setColorInputValueRaw(document.getElementById('geo-edges-color'), DEFAULT_DISPLAY_COLORS.edges);
+      setColorInputValueRaw(document.getElementById('geo-faces-color'), DEFAULT_DISPLAY_COLORS.faces);
+      setColorInputValueRaw(document.getElementById('viz-bbox-color'), DEFAULT_DISPLAY_COLORS.bbox);
+      setColorInputValueRaw(document.getElementById('viz-grid-color'), DEFAULT_DISPLAY_COLORS.grid);
 
       if (envBgCheck) {
         envBgCheck.checked = false;
