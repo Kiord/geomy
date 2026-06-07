@@ -707,33 +707,84 @@ export function initVizPanel() {
     return mat;
   }
 
-  function makeNormalGradientMaterial(common) {
+  function makeNormalGradientMaterial(common, orig, mesh) {
+    const normalParams = getNormalMapParams(orig, mesh);
+    const hasNormalMap = !!normalParams?.normalMap;
     const hasAlphaMap = !!common.alphaMap;
+    const useFlatNormals = currentNormalType === 'flat';
     const mat = new THREE.ShaderMaterial({
       uniforms: {
         opacity: { value: common.opacity },
+        normalMap: { value: normalParams?.normalMap || null },
+        normalScale: { value: normalParams?.normalScale || new THREE.Vector2(1, 1) },
         alphaMap: { value: common.alphaMap || null },
         alphaMapIntensity: { value: common.userData?.alphaMapIntensity ?? DEFAULT_MATERIAL_VALUES.alphaIntensity },
       },
       vertexShader: `
         varying vec2 vUv;
+        varying vec3 vWorldPosition;
         varying vec3 vWorldNormal;
 
         void main() {
           vUv = uv;
+          vec4 worldPosition = modelMatrix * vec4(position, 1.0);
+          vWorldPosition = worldPosition.xyz;
           vWorldNormal = normalize(mat3(modelMatrix) * normal);
-          gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+          gl_Position = projectionMatrix * viewMatrix * worldPosition;
         }
       `,
       fragmentShader: `
+        #ifdef GL_OES_standard_derivatives
+        #extension GL_OES_standard_derivatives : enable
+        #endif
+
         uniform float opacity;
+        uniform sampler2D normalMap;
+        uniform vec2 normalScale;
         uniform sampler2D alphaMap;
         uniform float alphaMapIntensity;
         varying vec2 vUv;
+        varying vec3 vWorldPosition;
         varying vec3 vWorldNormal;
 
+        vec3 faceWorldNormal() {
+          vec3 dx = dFdx(vWorldPosition);
+          vec3 dy = dFdy(vWorldPosition);
+          vec3 n = normalize(cross(dx, dy));
+          return gl_FrontFacing ? n : -n;
+        }
+
+        vec3 perturbWorldNormal(vec3 worldNormal) {
+          vec3 baseNormal;
+
+          if (${useFlatNormals ? 'true' : 'false'}) {
+            baseNormal = faceWorldNormal();
+          } else {
+            baseNormal = normalize(worldNormal);
+          }
+
+          if (!${hasNormalMap ? 'true' : 'false'}) {
+            return baseNormal;
+          }
+
+          vec3 mapNormal = texture2D(normalMap, vUv).xyz * 2.0 - 1.0;
+          mapNormal.xy *= normalScale;
+
+          vec3 q0 = dFdx(vWorldPosition);
+          vec3 q1 = dFdy(vWorldPosition);
+          vec2 st0 = dFdx(vUv);
+          vec2 st1 = dFdy(vUv);
+
+          vec3 n = baseNormal;
+          vec3 tangent = normalize(q0 * st1.t - q1 * st0.t);
+          vec3 bitangent = normalize(-q0 * st1.s + q1 * st0.s);
+          mat3 tbn = mat3(tangent, bitangent, n);
+
+          return normalize(tbn * mapNormal);
+        }
+
         void main() {
-          vec3 n = normalize(vWorldNormal);
+          vec3 n = perturbWorldNormal(vWorldNormal);
           float a = opacity;
 
           if (${hasAlphaMap ? 'true' : 'false'}) {
@@ -747,9 +798,14 @@ export function initVizPanel() {
       transparent: common.transparent,
       opacity: common.opacity,
       side: common.side,
+      extensions: {
+        derivatives: true,
+      },
     });
 
     mat.alphaMap = common.alphaMap || null;
+    mat.normalMap = normalParams?.normalMap || null;
+    mat.normalScale = normalParams?.normalScale || new THREE.Vector2(1, 1);
     mat.userData = { ...(common.userData || {}) };
     mat.depthWrite = !common.transparent;
     return mat;
@@ -905,6 +961,15 @@ export function initVizPanel() {
         mat.opacity = val;
         mat.transparent = transparent;
         mat.depthWrite = !transparent;
+
+        if (mat.uniforms?.opacity) {
+          mat.uniforms.opacity.value = val;
+        }
+
+        if (mat.uniforms?.alphaMapIntensity) {
+          mat.uniforms.alphaMapIntensity.value = mat.userData?.alphaMapIntensity ?? DEFAULT_MATERIAL_VALUES.alphaIntensity;
+        }
+
         mat.needsUpdate = true;
 
         anyTransparency = anyTransparency || transparent;
