@@ -7,7 +7,6 @@ import { OBJExporter } from 'three/examples/jsm/exporters/OBJExporter.js';
 import { PLYExporter } from 'three/examples/jsm/exporters/PLYExporter.js';
 import { STLExporter } from 'three/examples/jsm/exporters/STLExporter.js';
 import { GLTFExporter } from 'three/examples/jsm/exporters/GLTFExporter.js';
-import { mergeVertices } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import { MeshBVH } from 'three-mesh-bvh';
 
 import { app, updateEnvironmentUsage } from '../app.js';
@@ -130,28 +129,27 @@ const heatmapFieldCache = {
 
 const history = new HistoryStack({ limit: STACK_LIMIT });
 
-function smoothImportedGeometry(geometry, { weldVertices = false } = {}) {
+function smoothImportedGeometry(geometry) {
   if (!geometry?.attributes?.position) return geometry;
 
-  let next = geometry;
-
-  if (weldVertices) {
-    next.deleteAttribute?.('normal');
-    next = mergeVertices(next, 1e-5);
+  // Keep rigid-align mesh vertices as imported. Selections, landmarks,
+  // masks, exports, and correspondence data must see stable vertex indices.
+  // Only add normals when missing; this does not change vertex count/order.
+  if (!geometry.attributes.normal) {
+    geometry.computeVertexNormals?.();
   }
 
-  next.computeVertexNormals?.();
-  next.computeBoundingBox?.();
-  next.computeBoundingSphere?.();
-  return next;
+  geometry.computeBoundingBox?.();
+  geometry.computeBoundingSphere?.();
+  return geometry;
 }
 
-function prepareObjectGeometry(object, { weldVertices = false } = {}) {
+function prepareObjectGeometry(object) {
   object?.traverse?.(child => {
     if (!child.isMesh || !child.geometry) return;
 
     const original = child.geometry;
-    const prepared = smoothImportedGeometry(original, { weldVertices });
+    const prepared = smoothImportedGeometry(original);
     if (prepared && prepared !== original) {
       child.geometry = prepared;
       original.dispose?.();
@@ -1085,7 +1083,7 @@ async function objectFromFile(file, side) {
 
     if (ext === 'obj') {
       const obj = await loader.loadAsync(url);
-      return prepareObjectGeometry(obj, { weldVertices: true });
+      return prepareObjectGeometry(obj);
     }
 
     const geometry = smoothImportedGeometry(await loader.loadAsync(url));

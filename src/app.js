@@ -3,7 +3,6 @@ import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
 import { OBJLoader } from 'three/examples/jsm/loaders/OBJLoader.js';
 import { STLLoader } from 'three/examples/jsm/loaders/STLLoader.js';
 import { PLYLoader } from 'three/examples/jsm/loaders/PLYLoader.js';
-import { mergeVertices } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import { RoundedArcballControls } from './controls/RoundedArcballControls.js';
@@ -334,30 +333,23 @@ const loaders = {
 };
 
 
-function smoothImportedGeometry(geometry, { weldVertices = false } = {}) {
+function smoothImportedGeometry(geometry) {
   if (!geometry?.attributes?.position) return geometry;
 
-  let next = geometry;
-  const hadImportedNormals = !!geometry.attributes.normal;
-
-  if (weldVertices) {
-    // Preserve authored/imported vertex normals when they exist. If normals are
-    // part of the imported asset, they are usually the artist/tool's intended
-    // smoothing data and should not be replaced by computed normals.
-    next = mergeVertices(next, 1e-5);
+  // Critical: never weld, merge, re-index, or otherwise replace imported
+  // geometry here. Geomy tools (masking, landmarks, segmentation, rigid align)
+  // rely on the imported vertex count and order staying stable.
+  //
+  // Imported/authored normals are preserved. Normals are generated only when
+  // the asset has none, which adds a normal attribute with the same vertex
+  // count/order and does not change positions or indices.
+  if (!geometry.attributes.normal) {
+    geometry.computeVertexNormals?.();
   }
 
-  // Only generate normals for formats/assets that do not provide them. Three's
-  // computeVertexNormals() gives fully interpolated vertex normals; there is no
-  // angle threshold here, so generated normals are as smooth as the topology
-  // allows. Imported normals always win.
-  if (!hadImportedNormals && !next.attributes.normal) {
-    next.computeVertexNormals?.();
-  }
-
-  next.computeBoundingBox?.();
-  next.computeBoundingSphere?.();
-  return next;
+  geometry.computeBoundingBox?.();
+  geometry.computeBoundingSphere?.();
+  return geometry;
 }
 
 function configureImportedMaterialTransparency(material) {
@@ -383,7 +375,7 @@ function configureImportedMaterialTransparency(material) {
   });
 }
 
-function prepareObjectGeometry(object, { weldVertices = false } = {}) {
+function prepareObjectGeometry(object) {
   object?.traverse?.(child => {
     if (!child.isMesh) return;
 
@@ -392,7 +384,7 @@ function prepareObjectGeometry(object, { weldVertices = false } = {}) {
     if (!child.geometry) return;
 
     const original = child.geometry;
-    const prepared = smoothImportedGeometry(original, { weldVertices });
+    const prepared = smoothImportedGeometry(original);
     if (prepared && prepared !== original) {
       child.geometry = prepared;
       original.dispose?.();
@@ -465,7 +457,7 @@ export function loadFile(file) {
         }); break;
       case 'obj':
         loaders.obj.load(url, obj => {
-          prepareObjectGeometry(obj, { weldVertices: true });
+          prepareObjectGeometry(obj);
           obj.traverse(c => {
             if (c.isMesh) c.material = new THREE.MeshStandardMaterial({ color: '#e0e0e0', roughness: 0.4, metalness: 0.1 });
           });
