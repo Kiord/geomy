@@ -26,12 +26,67 @@ export function getMeshLabel(mesh) {
 }
 
 export function getTriangleCount(mesh) {
+  const canonical = getCanonicalData(mesh);
+  if (canonical?.faceCount) return canonical.faceCount;
+
   const position = mesh?.geometry?.attributes?.position;
   if (!position) return 0;
 
   const index = mesh.geometry.index;
   return Math.floor((index ? index.count : position.count) / 3);
 }
+
+
+export function getCanonicalData(mesh) {
+  return mesh?.geometry?.userData?.geomyCanonical || mesh?.userData?.geomyCanonical || null;
+}
+
+export function getCanonicalVertexCount(mesh) {
+  const canonical = getCanonicalData(mesh);
+  return canonical?.vertexCount || mesh?.geometry?.attributes?.position?.count || 0;
+}
+
+export function getCanonicalFaceCount(mesh) {
+  const canonical = getCanonicalData(mesh);
+  return canonical?.faceCount || getTriangleCount(mesh);
+}
+
+export function getCanonicalPositionAttribute(mesh) {
+  const canonical = getCanonicalData(mesh);
+  if (!canonical?.positions) return mesh?.geometry?.attributes?.position || null;
+
+  if (!canonical.positionAttribute || canonical.positionAttribute.array !== canonical.positions) {
+    canonical.positionAttribute = new THREE.Float32BufferAttribute(canonical.positions, 3);
+  }
+
+  return canonical.positionAttribute;
+}
+
+export function renderVertexToCanonical(mesh, renderVertexIndex) {
+  const source = mesh?.geometry?.getAttribute?.('sourceVertexId');
+  if (!source) return renderVertexIndex;
+
+  const index = Number(source.getX(renderVertexIndex));
+  return Number.isInteger(index) ? index : renderVertexIndex;
+}
+
+export function canonicalTriangleVertexIndicesFromHit(hit) {
+  const mesh = hit?.object;
+  const face = hit?.face;
+  if (!mesh?.isMesh || !face) return null;
+
+  return [face.a, face.b, face.c].map(index => renderVertexToCanonical(mesh, index));
+}
+
+export function canonicalVertexWorldPosition(mesh, vertexIndex) {
+  const position = getCanonicalPositionAttribute(mesh);
+  if (!position || vertexIndex < 0 || vertexIndex >= position.count) return null;
+
+  return new THREE.Vector3()
+    .fromBufferAttribute(position, vertexIndex)
+    .applyMatrix4(mesh.matrixWorld);
+}
+
 
 export function getMaterialList(material) {
   if (!material) return [];
@@ -118,10 +173,56 @@ export function ensureColorAttribute(mesh) {
     mesh.geometry.setAttribute('color', color);
   }
 
+  color.userData = color.userData || {};
+
+  const sourceVertexId = mesh.geometry.getAttribute('sourceVertexId') || null;
+
+  if (color.userData.sourceVertexId !== sourceVertexId) {
+    color.userData.sourceVertexId = sourceVertexId;
+    color.userData.sourceVertexLookup = null;
+  }
+
   return color;
 }
 
+function renderVerticesForCanonicalVertex(colorAttribute, vertexIndex) {
+  const sourceVertexId = colorAttribute?.userData?.sourceVertexId || null;
+  if (!sourceVertexId) return null;
+
+  let cache = colorAttribute.userData.sourceVertexLookup;
+
+  if (!cache || cache.sourceVertexId !== sourceVertexId || cache.count !== sourceVertexId.count) {
+    const lookup = new Map();
+
+    for (let renderIndex = 0; renderIndex < sourceVertexId.count; renderIndex++) {
+      const canonicalIndex = sourceVertexId.getX(renderIndex);
+      let renderIndices = lookup.get(canonicalIndex);
+
+      if (!renderIndices) {
+        renderIndices = [];
+        lookup.set(canonicalIndex, renderIndices);
+      }
+
+      renderIndices.push(renderIndex);
+    }
+
+    cache = { sourceVertexId, count: sourceVertexId.count, lookup };
+    colorAttribute.userData.sourceVertexLookup = cache;
+  }
+
+  return cache.lookup.get(vertexIndex) || null;
+}
+
 export function setVertexColor(colorAttribute, vertexIndex, color) {
+  const renderIndices = renderVerticesForCanonicalVertex(colorAttribute, vertexIndex);
+
+  if (renderIndices) {
+    renderIndices.forEach(renderIndex => {
+      colorAttribute.setXYZ(renderIndex, color.r, color.g, color.b);
+    });
+    return;
+  }
+
   colorAttribute.setXYZ(vertexIndex, color.r, color.g, color.b);
 }
 
@@ -296,13 +397,15 @@ export class MeshComponentIndex {
   }
 
   get(mesh) {
-    const position = mesh?.geometry?.attributes?.position;
+    const position = getCanonicalPositionAttribute(mesh);
     if (!mesh?.isMesh || !position) return null;
 
+    const canonical = getCanonicalData(mesh);
     const index = mesh.geometry.index || null;
+    const faces = canonical?.faces || null;
     const cached = this.cache.get(mesh);
 
-    if (cached && cached.position === position && cached.index === index) {
+    if (cached && cached.position === position && cached.index === index && cached.faces === faces) {
       return cached;
     }
 
@@ -321,16 +424,29 @@ export class MeshComponentIndex {
       }
     }
 
-    const triIndexCount = index ? index.count : position.count;
-    const triCount = Math.floor(triIndexCount / 3);
+    if (faces) {
+      const triCount = Math.floor(faces.length / 3);
 
-    for (let tri = 0; tri < triCount; tri++) {
-      const a = index ? index.getX(tri * 3) : tri * 3;
-      const b = index ? index.getX(tri * 3 + 1) : tri * 3 + 1;
-      const c = index ? index.getX(tri * 3 + 2) : tri * 3 + 2;
+      for (let tri = 0; tri < triCount; tri++) {
+        const a = faces[tri * 3];
+        const b = faces[tri * 3 + 1];
+        const c = faces[tri * 3 + 2];
 
-      if (a < position.count && b < position.count) unionRoots(parent, a, b);
-      if (a < position.count && c < position.count) unionRoots(parent, a, c);
+        if (a < position.count && b < position.count) unionRoots(parent, a, b);
+        if (a < position.count && c < position.count) unionRoots(parent, a, c);
+      }
+    } else {
+      const triIndexCount = index ? index.count : position.count;
+      const triCount = Math.floor(triIndexCount / 3);
+
+      for (let tri = 0; tri < triCount; tri++) {
+        const a = index ? index.getX(tri * 3) : tri * 3;
+        const b = index ? index.getX(tri * 3 + 1) : tri * 3 + 1;
+        const c = index ? index.getX(tri * 3 + 2) : tri * 3 + 2;
+
+        if (a < position.count && b < position.count) unionRoots(parent, a, b);
+        if (a < position.count && c < position.count) unionRoots(parent, a, c);
+      }
     }
 
     const rootToComponentIndex = new Map();
@@ -351,7 +467,7 @@ export class MeshComponentIndex {
       components[componentIndex].push(i);
     }
 
-    const data = { position, index, vertexToComponent, components };
+    const data = { position, index, faces, vertexToComponent, components };
     this.cache.set(mesh, data);
     return data;
   }
@@ -359,14 +475,11 @@ export class MeshComponentIndex {
 
 export function seedVertexIndexFromHit(hit) {
   const mesh = hit?.object;
-  const position = mesh?.geometry?.attributes?.position;
+  const position = getCanonicalPositionAttribute(mesh);
   if (!mesh?.isMesh || !position) return -1;
 
-  const candidates = hit.face
-    ? [hit.face.a, hit.face.b, hit.face.c].filter(index => (
-      Number.isInteger(index) && index >= 0 && index < position.count
-    ))
-    : [];
+  const candidates = canonicalTriangleVertexIndicesFromHit(hit)
+    ?.filter(index => Number.isInteger(index) && index >= 0 && index < position.count) || [];
 
   if (!candidates.length) return -1;
 
@@ -401,7 +514,7 @@ export function collectComponentVertexIndices(hit, componentIndex) {
 
 export function collectBrushVertexIndices(hit, brushRadius) {
   const mesh = hit?.object;
-  const position = mesh?.geometry?.attributes?.position;
+  const position = getCanonicalPositionAttribute(mesh);
   if (!mesh?.isMesh || !position) return [];
 
   const radiusSq = brushRadius * brushRadius;
@@ -419,11 +532,12 @@ export function collectBrushVertexIndices(hit, brushRadius) {
 
   // On coarse triangles, a tiny brush may hit the surface without enclosing a
   // vertex. Include the hit triangle vertices so every click has visible effect.
-  if (!indices.length && hit.face) {
-    indices.push(hit.face.a, hit.face.b, hit.face.c);
+  if (!indices.length) {
+    const tri = canonicalTriangleVertexIndicesFromHit(hit) || [];
+    indices.push(...tri);
   }
 
-  return Array.from(new Set(indices));
+  return Array.from(new Set(indices.filter(i => Number.isInteger(i) && i >= 0 && i < position.count)));
 }
 
 export function collectHitVertexIndices(hit, { mode = 'brush', brushRadius, componentIndex }) {

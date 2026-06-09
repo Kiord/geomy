@@ -1,6 +1,5 @@
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
-import { OBJLoader } from 'three/examples/jsm/loaders/OBJLoader.js';
 import { STLLoader } from 'three/examples/jsm/loaders/STLLoader.js';
 import { PLYLoader } from 'three/examples/jsm/loaders/PLYLoader.js';
 
@@ -10,6 +9,7 @@ import { RoundedArcballControls } from './controls/RoundedArcballControls.js';
 import { HDRLoader } from 'three/examples/jsm/loaders/HDRLoader.js';
 import { EXRLoader } from 'three/examples/jsm/loaders/EXRLoader.js';
 import { getTaskCapabilities, taskAcceptsSharedMeshLoad } from './core/taskCapabilities.js';
+import { loadCanonicalOBJFile } from './io/objCanonicalLoader.js';
 
 // ── Central state ──
 export const app = {
@@ -327,7 +327,6 @@ window.addEventListener('themechange', syncBackground);
 // ── Loaders ──
 const loaders = {
   gltf: new GLTFLoader(),
-  obj: new OBJLoader(),
   stl: new STLLoader(),
   ply: new PLYLoader(),
 };
@@ -394,6 +393,27 @@ function prepareObjectGeometry(object) {
   return object;
 }
 
+function meshVertexCount(mesh) {
+  const canonical = mesh?.geometry?.userData?.geomyCanonical || mesh?.userData?.geomyCanonical;
+  const canonicalCount = canonical?.vertexCount;
+
+  if (Number.isFinite(canonicalCount) && canonicalCount >= 0) {
+    return canonicalCount;
+  }
+
+  return mesh?.geometry?.attributes?.position?.count || 0;
+}
+
+function objectVertexCount(object) {
+  let count = 0;
+
+  object?.traverse?.(child => {
+    if (child.isMesh) count += meshVertexCount(child);
+  });
+
+  return count;
+}
+
 // ── File loading ──
 export function loadFile(file) {
   if (!file) return;
@@ -439,10 +459,7 @@ export function loadFile(file) {
     app.dom.dropOverlay.style.display = 'none';
     setLoadedMeshName(file.name);
 
-    let verts = 0;
-    obj.traverse(c => {
-      if (c.isMesh && c.geometry) verts += c.geometry.attributes.position?.count || 0;
-    });
+    const verts = objectVertexCount(obj);
     app.dom.vertexCount.textContent = verts ? `${verts.toLocaleString()} verts` : '';
 
     if (app.task?.onFileLoaded) app.task.onFileLoaded();
@@ -456,13 +473,17 @@ export function loadFile(file) {
           addToScene(g.scene);
         }); break;
       case 'obj':
-        loaders.obj.load(url, obj => {
-          prepareObjectGeometry(obj);
-          obj.traverse(c => {
-            if (c.isMesh) c.material = new THREE.MeshStandardMaterial({ color: '#e0e0e0', roughness: 0.4, metalness: 0.1 });
+        loadCanonicalOBJFile(file)
+          .then(obj => {
+            prepareObjectGeometry(obj);
+            addToScene(obj);
+          })
+          .catch(err => {
+            setLoadedMeshName('');
+            console.error(err);
+            alert(`Failed to load OBJ: ${err?.message || err}`);
           });
-          addToScene(obj);
-        }); break;
+        break;
       case 'stl':
         loaders.stl.load(url, geo => {
           const prepared = smoothImportedGeometry(geo);

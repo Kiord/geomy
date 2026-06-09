@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import { app } from '../app.js';
-import { MeshComponentIndex, assetBoundingBoxForObject } from './meshTaskUtils.js';
+import { MeshComponentIndex, assetBoundingBoxForObject, getCanonicalData, getCanonicalVertexCount } from './meshTaskUtils.js';
 import { downloadBlob } from '../util.js';
 
 
@@ -123,8 +123,13 @@ function computeStats() {
     const idx = geo.index;
     const uv = geo.attributes.uv;
 
-    vertices += pos.count;
-    if (uv) uvVertices += uv.count;
+    const canonical = getCanonicalData(mesh);
+    vertices += getCanonicalVertexCount(mesh);
+    if (canonical?.uvs) {
+      uvVertices += canonical.uvs.length / 2;
+    } else if (uv) {
+      uvVertices += uv.count;
+    }
 
     const data = componentIndex.get(mesh);
     if (data && data.components) {

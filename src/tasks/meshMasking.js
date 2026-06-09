@@ -14,6 +14,7 @@ import {
   collectHitVertexIndices as collectHitVertices,
   disposeMaterialOrArray,
   ensureColorAttribute,
+  getCanonicalVertexCount,
   getCurrentMeshes,
   getMeshLabel,
   getTriangleCount,
@@ -242,8 +243,8 @@ function ensureMeshState(mesh, mask = getActiveMask()) {
 }
 
 function setVertexSelected(state, vertexIndex, selected) {
-  const position = state.mesh.geometry?.attributes?.position;
-  if (!position || vertexIndex < 0 || vertexIndex >= position.count) return false;
+  const vertexCount = getCanonicalVertexCount(state.mesh);
+  if (vertexIndex < 0 || vertexIndex >= vertexCount) return false;
 
   const wasSelected = state.selected.has(vertexIndex);
   if (wasSelected === selected) return false;
@@ -265,12 +266,12 @@ function setVertexSelected(state, vertexIndex, selected) {
 
 function updateMeshColors(mesh) {
   const state = ensureMeshState(mesh);
-  const position = mesh.geometry?.attributes?.position;
+  const vertexCount = getCanonicalVertexCount(mesh);
   const colorAttribute = ensureColorAttribute(mesh);
 
-  if (!position || !colorAttribute) return;
+  if (!vertexCount || !colorAttribute) return;
 
-  for (let i = 0; i < position.count; i++) {
+  for (let i = 0; i < vertexCount; i++) {
     setVertexColor(colorAttribute, i, state.selected.has(i) ? SELECTED_COLOR : UNSELECTED_COLOR);
   }
 
@@ -390,7 +391,7 @@ function getSelectedCount() {
 
 function getTotalVertexCount() {
   return getCurrentMeshes().reduce((sum, mesh) => (
-    sum + (mesh.geometry?.attributes?.position?.count || 0)
+    sum + getCanonicalVertexCount(mesh)
   ), 0);
 }
 
@@ -845,11 +846,11 @@ function invertMask() {
   return commit('invert mask', () => {
     getCurrentMeshes().forEach(mesh => {
       const state = ensureMeshState(mesh);
-      const position = mesh.geometry?.attributes?.position;
-      if (!position) return;
+      const vertexCount = getCanonicalVertexCount(mesh);
+      if (!vertexCount) return;
 
       const next = new Set();
-      for (let i = 0; i < position.count; i++) {
+      for (let i = 0; i < vertexCount; i++) {
         if (!state.selected.has(i)) next.add(i);
       }
       getActiveMask().selectedByMesh.set(mesh, next);
@@ -950,7 +951,7 @@ function maskArrayExportEntries(mask, meshes) {
   ];
 
   meshes.forEach((mesh, meshIndex) => {
-    const vertexCount = mesh.geometry?.attributes?.position?.count || 0;
+    const vertexCount = getCanonicalVertexCount(mesh);
     const maskArray = new Uint8Array(vertexCount);
     const selected = Array.from(getMaskSelection(mask, mesh)).filter(i => i >= 0 && i < vertexCount).sort((a, b) => a - b);
     selected.forEach(i => { maskArray[i] = 1; });
@@ -992,7 +993,7 @@ async function parseMaskBundleFile(file) {
   let matched = 0;
 
   meshes.forEach((mesh, meshIndex) => {
-    const vertexCount = mesh.geometry?.attributes?.position?.count || 0;
+    const vertexCount = getCanonicalVertexCount(mesh);
     const dense = arrayEntryByNames(arrays, [`mesh_${meshIndex}/mask.npy`, `mask_${meshIndex}.npy`, 'mask.npy']);
     const indices = arrayEntryByNames(arrays, [`mesh_${meshIndex}/indices.npy`, `indices_${meshIndex}.npy`, 'indices.npy', 'index.npy']);
 
@@ -1150,7 +1151,7 @@ function assignImportedMesh(mask, meshEntry, meshIndex, meshes) {
     };
   }
 
-  const result = parseIndexList(meshEntry.selectedVertexIndices, mesh.geometry.attributes.position.count);
+  const result = parseIndexList(meshEntry.selectedVertexIndices, getCanonicalVertexCount(mesh));
   mask.selectedByMesh.set(mesh, result.selected);
   return { matched: true, skipped: result.skipped };
 }
@@ -1169,7 +1170,7 @@ function parseMaskPayload(payload, sourceName = null) {
     }
 
     const mask = makeImportedMask(sourceName || 'Imported Mask 1');
-    const result = parseIndexList(payload, meshes[0].geometry.attributes.position.count);
+    const result = parseIndexList(payload, getCanonicalVertexCount(meshes[0]));
     mask.selectedByMesh.set(meshes[0], result.selected);
     importedMasks.push(mask);
     skipped += result.skipped;
@@ -1180,7 +1181,7 @@ function parseMaskPayload(payload, sourceName = null) {
 
     const mask = makeImportedMask(payload.name || sourceName || 'Imported Mask 1', payload.id);
     const source = payload.selectedVertexIndices || payload.selectedVertices;
-    const result = parseIndexList(source, meshes[0].geometry.attributes.position.count);
+    const result = parseIndexList(source, getCanonicalVertexCount(meshes[0]));
     mask.selectedByMesh.set(meshes[0], result.selected);
     importedMasks.push(mask);
     skipped += result.skipped;

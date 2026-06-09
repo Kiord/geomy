@@ -1,6 +1,5 @@
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
-import { OBJLoader } from 'three/examples/jsm/loaders/OBJLoader.js';
 import { STLLoader } from 'three/examples/jsm/loaders/STLLoader.js';
 import { PLYLoader } from 'three/examples/jsm/loaders/PLYLoader.js';
 import { OBJExporter } from 'three/examples/jsm/exporters/OBJExporter.js';
@@ -21,12 +20,15 @@ import {
 import { GEOMY_VERSION } from '../version.js';
 import { downloadBlob } from '../util.js';
 import { downloadNpy, parseBundleArrays, readArrayBundle } from '../io/numpyBundle.js';
+import { loadCanonicalOBJFile } from '../io/objCanonicalLoader.js';
 import {
   MeshComponentIndex,
   TemporaryVisualizationState,
   clamp,
   collectHitVertexIndices,
   ensureColorAttribute,
+  getCanonicalPositionAttribute,
+  getCanonicalVertexCount,
   getMeshLabel,
   isTextInputTarget,
   roundNumber,
@@ -56,7 +58,6 @@ const DISPLAY_REFRESH_CONTROL_IDS = ['geo-vertices', 'geo-edges', 'geo-faces', '
 const loaders = {
   gltf: new GLTFLoader(),
   glb: new GLTFLoader(),
-  obj: new OBJLoader(),
   stl: new STLLoader(),
   ply: new PLYLoader(),
 };
@@ -585,14 +586,14 @@ function setAlignLightsVisible(visible) {
 // ── Selection and snapshots ───────────────────────────────────────
 
 function getSelection(mesh, side) {
-  const position = mesh?.geometry?.attributes?.position;
-  if (!position) return null;
+  const vertexCount = getCanonicalVertexCount(mesh);
+  if (!vertexCount) return null;
 
   const store = getSelectionStore(side);
   let selection = store.get(mesh);
 
-  if (!selection || selection.length !== position.count) {
-    selection = new Uint8Array(position.count);
+  if (!selection || selection.length !== vertexCount) {
+    selection = new Uint8Array(vertexCount);
     selection.fill(1);
     store.set(mesh, selection);
   }
@@ -1070,6 +1071,11 @@ function normalizeObjectToUnitBox(object) {
 
 async function objectFromFile(file, side) {
   const ext = file.name.split('.').pop().toLowerCase();
+
+  if (ext === 'obj') {
+    return prepareObjectGeometry(await loadCanonicalOBJFile(file));
+  }
+
   const loader = loaders[ext];
   if (!loader) throw new Error(`Unsupported ${side} mesh: .${ext}`);
 
@@ -1079,11 +1085,6 @@ async function objectFromFile(file, side) {
     if (ext === 'gltf' || ext === 'glb') {
       const gltf = await loader.loadAsync(url);
       return gltf.scene;
-    }
-
-    if (ext === 'obj') {
-      const obj = await loader.loadAsync(url);
-      return prepareObjectGeometry(obj);
     }
 
     const geometry = smoothImportedGeometry(await loader.loadAsync(url));
@@ -1993,7 +1994,7 @@ function collectIncludedWorldPoints(side, limit = Infinity) {
   const world = new THREE.Vector3();
 
   getMeshesForSide(side).forEach(mesh => {
-    const position = mesh.geometry?.attributes?.position;
+    const position = getCanonicalPositionAttribute(mesh);
     const selection = getSelection(mesh, side);
     if (!position || !selection) return;
 
@@ -2899,13 +2900,13 @@ function parseMaskPayloadForSide(payload, side) {
 
   if (Array.isArray(payload)) {
     if (meshes.length !== 1) throw new Error('A bare vertex-index array can only be imported for a single-mesh side.');
-    const parsed = parseMaskIndexList(payload, meshes[0].geometry.attributes.position.count);
+    const parsed = parseMaskIndexList(payload, getCanonicalVertexCount(meshes[0]));
     selectionByMesh.set(meshes[0], parsed.selected);
     skipped += parsed.skipped;
   } else if (!payload?.mask && (Array.isArray(payload?.selectedVertexIndices) || Array.isArray(payload?.selectedVertices))) {
     if (meshes.length !== 1) throw new Error('A single selectedVertexIndices list can only be imported for a single-mesh side.');
     const source = payload.selectedVertexIndices || payload.selectedVertices;
-    const parsed = parseMaskIndexList(source, meshes[0].geometry.attributes.position.count);
+    const parsed = parseMaskIndexList(source, getCanonicalVertexCount(meshes[0]));
     selectionByMesh.set(meshes[0], parsed.selected);
     skipped += parsed.skipped;
   } else if (payload?.mask && Array.isArray(payload.mask?.meshes)) {

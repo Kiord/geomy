@@ -15,7 +15,7 @@ import {
 import { GEOMY_VERSION } from '../version.js';
 import { raycast, downloadBlob } from '../util.js';
 import { downloadArrayBundle, jsonEntry, npyEntry, parseBundleArrays, readArrayBundle } from '../io/numpyBundle.js';
-import { rootLocalPointFromWorld, worldPointFromRootLocal } from './meshTaskUtils.js';
+import { canonicalTriangleVertexIndicesFromHit, canonicalVertexWorldPosition, getCanonicalPositionAttribute, rootLocalPointFromWorld, worldPointFromRootLocal } from './meshTaskUtils.js';
 import '../css/landmarkPicking.css';
 
 const COLORS = LANDMARK_COLORS;
@@ -523,13 +523,14 @@ function makeEdgeBinding(hit, point, edgeVertexIndices, t) {
 
 function triangleDataFromHit(hit) {
   const mesh = hit.object;
-  const geometry = mesh?.geometry;
-  const position = geometry?.attributes?.position;
+  const position = getCanonicalPositionAttribute(mesh);
   const face = hit.face;
 
   if (!mesh || !position || !face) return null;
 
-  const vertexIndices = [face.a, face.b, face.c];
+  const vertexIndices = canonicalTriangleVertexIndicesFromHit(hit);
+  if (!vertexIndices) return null;
+
   const local = vertexIndices.map(index => new THREE.Vector3().fromBufferAttribute(position, index));
   const world = local.map(point => point.clone().applyMatrix4(mesh.matrixWorld));
 
@@ -659,13 +660,8 @@ function toInteger(value) {
 
 function vertexWorldPosition(mesh, vertexIndex) {
   const index = toInteger(vertexIndex);
-  const position = mesh?.geometry?.attributes?.position;
-  if (!position || index === null || index < 0 || index >= position.count) {
-    return null;
-  }
-  return new THREE.Vector3()
-    .fromBufferAttribute(position, index)
-    .applyMatrix4(mesh.matrixWorld);
+  if (index === null) return null;
+  return canonicalVertexWorldPosition(mesh, index);
 }
 
 function vectorFromImportedPosition(value) {

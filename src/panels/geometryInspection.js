@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import { app } from '../app.js';
+import { getCanonicalPositionAttribute, getCanonicalData } from '../tasks/meshTaskUtils.js';
 
 const GEOMETRY_MARKER_RADIUS = 0.002;
 const DEFAULT_GEOMETRY_COLOR = '#ff8c00';
@@ -126,7 +127,7 @@ function buildVertices() {
   app.currentObject.traverse(mesh => {
     if (!mesh.isMesh || !isVisibleInCurrentHierarchy(mesh)) return;
 
-    const pos = mesh.geometry?.attributes?.position;
+    const pos = getCanonicalPositionAttribute(mesh);
     if (!pos) return;
 
     const localToWorld = mesh.matrixWorld.clone();
@@ -164,7 +165,37 @@ function buildEdges() {
   app.currentObject.traverse(mesh => {
     if (!mesh.isMesh || !isVisibleInCurrentHierarchy(mesh) || !mesh.geometry?.attributes?.position) return;
 
-    const edgesGeometry = new THREE.EdgesGeometry(mesh.geometry, 0);
+    const canonical = getCanonicalData(mesh);
+    let edgesGeometry = null;
+
+    if (canonical?.positions && canonical?.faces) {
+      const points = [];
+      const seen = new Set();
+
+      for (let i = 0; i < canonical.faces.length; i += 3) {
+        const tri = [canonical.faces[i], canonical.faces[i + 1], canonical.faces[i + 2]];
+        [[tri[0], tri[1]], [tri[1], tri[2]], [tri[2], tri[0]]].forEach(([a, b]) => {
+          const key = a < b ? `${a}|${b}` : `${b}|${a}`;
+          if (seen.has(key)) return;
+          seen.add(key);
+
+          points.push(
+            canonical.positions[a * 3],
+            canonical.positions[a * 3 + 1],
+            canonical.positions[a * 3 + 2],
+            canonical.positions[b * 3],
+            canonical.positions[b * 3 + 1],
+            canonical.positions[b * 3 + 2],
+          );
+        });
+      }
+
+      edgesGeometry = new THREE.BufferGeometry();
+      edgesGeometry.setAttribute('position', new THREE.Float32BufferAttribute(points, 3));
+    } else {
+      edgesGeometry = new THREE.EdgesGeometry(mesh.geometry, 0);
+    }
+
     const material = makeLineMaterial(settings.edges.color);
     const lines = new THREE.LineSegments(edgesGeometry, material);
 
@@ -187,18 +218,20 @@ function buildFaces() {
   app.currentObject.traverse(mesh => {
     if (!mesh.isMesh || !isVisibleInCurrentHierarchy(mesh)) return;
 
-    const pos = mesh.geometry?.attributes?.position;
+    const pos = getCanonicalPositionAttribute(mesh);
     if (!pos) return;
 
-    const idx = mesh.geometry.index;
+    const canonical = getCanonicalData(mesh);
+    const idx = canonical?.faces ? null : mesh.geometry.index;
+    const faces = canonical?.faces || null;
     const localToWorld = mesh.matrixWorld.clone();
-    const triCount = idx ? idx.count / 3 : pos.count / 3;
+    const triCount = faces ? faces.length / 3 : (idx ? idx.count / 3 : pos.count / 3);
     const centers = [];
 
     for (let t = 0; t < triCount; t++) {
-      const a = idx ? idx.getX(t * 3) : t * 3;
-      const b = idx ? idx.getX(t * 3 + 1) : t * 3 + 1;
-      const c = idx ? idx.getX(t * 3 + 2) : t * 3 + 2;
+      const a = faces ? faces[t * 3] : (idx ? idx.getX(t * 3) : t * 3);
+      const b = faces ? faces[t * 3 + 1] : (idx ? idx.getX(t * 3 + 1) : t * 3 + 1);
+      const c = faces ? faces[t * 3 + 2] : (idx ? idx.getX(t * 3 + 2) : t * 3 + 2);
 
       const va = new THREE.Vector3().fromBufferAttribute(pos, a).applyMatrix4(localToWorld);
       const vb = new THREE.Vector3().fromBufferAttribute(pos, b).applyMatrix4(localToWorld);

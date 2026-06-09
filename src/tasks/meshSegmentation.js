@@ -12,6 +12,7 @@ import {
   collectHitVertexIndices as collectHitVertices,
   disposeMaterialOrArray as disposeMaterial,
   ensureColorAttribute as colorAttributeFor,
+  getCanonicalVertexCount,
   getCurrentMeshes as meshes,
   getMeshLabel as meshName,
   getTriangleCount as triangleCount,
@@ -137,12 +138,12 @@ function colorForRegionId(regionId) {
 }
 
 function assignmentFor(mesh) {
-  const position = mesh?.geometry?.attributes?.position;
-  if (!mesh || !position) return null;
+  const vertexCount = getCanonicalVertexCount(mesh);
+  if (!mesh || !vertexCount) return null;
 
   let assignment = assignmentsByMesh.get(mesh);
-  if (!assignment || assignment.length !== position.count) {
-    const next = new Int32Array(position.count);
+  if (!assignment || assignment.length !== vertexCount) {
+    const next = new Int32Array(vertexCount);
     if (assignment) next.set(assignment.slice(0, Math.min(assignment.length, next.length)));
     assignment = next;
     assignmentsByMesh.set(mesh, assignment);
@@ -168,7 +169,7 @@ function repaintAll() {
 }
 
 function totalVertexCount() {
-  return meshes().reduce((sum, mesh) => sum + (mesh.geometry?.attributes?.position?.count || 0), 0);
+  return meshes().reduce((sum, mesh) => sum + getCanonicalVertexCount(mesh), 0);
 }
 
 function assignedVertexCount() {
@@ -1045,7 +1046,7 @@ function segmentationArrayExportEntries(currentMeshes) {
 
   currentMeshes.forEach((mesh, meshIndex) => {
     const assignment = assignmentFor(mesh);
-    const vertexCount = mesh.geometry?.attributes?.position?.count || 0;
+    const vertexCount = getCanonicalVertexCount(mesh);
     const dense = new Uint8Array(vertexCount * regions.length);
 
     for (let v = 0; v < vertexCount; v++) {
@@ -1108,7 +1109,7 @@ async function parseSegmentationBundle(file) {
     const masksArray = arrayEntryByNames(arrays, [`mesh_${meshIndex}/masks.npy`, meshIndex === 0 ? 'masks.npy' : `masks_${meshIndex}.npy`]);
     if (!masksArray) return;
 
-    const vertexCount = mesh.geometry?.attributes?.position?.count || 0;
+    const vertexCount = getCanonicalVertexCount(mesh);
     const cols = masksArray.shape?.[1] || S;
     const rows = masksArray.shape?.[0] || Math.floor(masksArray.data.length / Math.max(1, cols));
     const assignment = new Int32Array(vertexCount);
@@ -1184,7 +1185,7 @@ function exportJSON() {
       meshIndex,
       meshUuid: mesh.uuid,
       meshName: meshName(mesh),
-      vertexCount: mesh.geometry.attributes.position.count,
+      vertexCount: getCanonicalVertexCount(mesh),
       triangleCount: triangleCount(mesh),
       assignments: sparseAssignments(mesh).map(([vertexIndex, regionId]) => ({ vertexIndex, regionId })),
     })),
@@ -1267,7 +1268,7 @@ function parseSegmentation(payload) {
       return;
     }
 
-    const result = parseAssignments(entry, mesh.geometry.attributes.position.count, validRegionIds);
+    const result = parseAssignments(entry, getCanonicalVertexCount(mesh), validRegionIds);
     importedAssignments.set(mesh, result.assignment);
     skipped += result.skipped;
   });
