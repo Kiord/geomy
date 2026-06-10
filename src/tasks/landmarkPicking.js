@@ -23,6 +23,9 @@ const COLORS = LANDMARK_COLORS;
 const SNAP_MODES = ['triangle', 'vertex', 'edge'];
 const PICK_RADIUS_PX = 18;
 const STACK_LIMIT = 100;
+const MIN_LANDMARK_SCALE = 0.01;
+const MAX_LANDMARK_SCALE = 5.0;
+const LANDMARK_WHEEL_FACTOR = 1.12;
 
 let landmarks = [];
 let markersGroup = null;
@@ -1283,15 +1286,15 @@ function onWheel(event) {
   event.preventDefault();
   event.stopPropagation();
 
-  const delta = Math.sign(event.deltaY) * -0.1;
-  const newScale = clamp(landmarkScale + delta, 0.2, 5.0);
+  const factor = event.deltaY < 0 ? LANDMARK_WHEEL_FACTOR : 1 / LANDMARK_WHEEL_FACTOR;
+  const newScale = clamp(landmarkScale * factor, MIN_LANDMARK_SCALE, MAX_LANDMARK_SCALE);
 
   if (newScale !== landmarkScale) {
     landmarkScale = newScale;
     const slider = document.getElementById('landmark-scale');
     const label = document.getElementById('landmark-scale-val');
-    if (slider) slider.value = landmarkScale;
-    if (label) label.textContent = landmarkScale.toFixed(1);
+    if (slider) slider.value = String(landmarkScale);
+    if (label) label.textContent = landmarkScale.toFixed(2);
     rebuildMarkers();
   }
 }
@@ -1737,8 +1740,8 @@ function renderPanel() {
 
     <div class="section-title">Landmark Scale</div>
     <div class="range-row">
-      <input type="range" id="landmark-scale" min="0.2" max="5" step="0.1" value="${landmarkScale}">
-      <span class="range-val" id="landmark-scale-val">${landmarkScale.toFixed(1)}</span>
+      <input type="range" id="landmark-scale" min="${MIN_LANDMARK_SCALE}" max="${MAX_LANDMARK_SCALE}" step="0.01" value="${landmarkScale}">
+      <span class="range-val" id="landmark-scale-val">${landmarkScale.toFixed(2)}</span>
     </div>
 
 
@@ -1794,8 +1797,8 @@ function renderPanel() {
   const scaleSlider = document.getElementById('landmark-scale');
   const scaleVal = document.getElementById('landmark-scale-val');
   scaleSlider?.addEventListener('input', () => {
-    landmarkScale = parseFloat(scaleSlider.value);
-    if (scaleVal) scaleVal.textContent = landmarkScale.toFixed(1);
+    landmarkScale = clamp(parseFloat(scaleSlider.value), MIN_LANDMARK_SCALE, MAX_LANDMARK_SCALE);
+    if (scaleVal) scaleVal.textContent = landmarkScale.toFixed(2);
     rebuildMarkers();
   });
 

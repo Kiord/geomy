@@ -39,13 +39,15 @@ import '../css/meshRigidAlign.css';
 
 const TASK_RENDER_OVERRIDE = 'mesh-rigid-align';
 const STACK_LIMIT = 100;
-const DEFAULT_BRUSH_RADIUS = 0.04;
-const MIN_BRUSH_RADIUS = 0.005;
-const MAX_BRUSH_RADIUS = 0.3;
+const DEFAULT_BRUSH_RADIUS = 28;
+const MIN_BRUSH_RADIUS = 2;
+const MAX_BRUSH_RADIUS = 220;
 const DEFAULT_SAMPLE_LIMIT = 2500;
 const DEFAULT_TARGET_LIMIT = 8000;
 const MAX_ICP_ITERATIONS = 80;
 const DEFAULT_LANDMARK_BLEND = 0;
+const MIN_LANDMARK_SCALE = 0.01;
+const MAX_LANDMARK_SCALE = 6.0;
 const DISPLAY_MODES = ['source', 'target', 'both'];
 const INTERACTION_MODES = ['paint', 'landmark'];
 
@@ -799,8 +801,8 @@ function restoreSnapshot(snapshot) {
   lastResult = snapshot.lastResult || null;
   selectedLandmarkSide = snapshot.selectedLandmarkSide || null;
   selectedLandmarkIndex = Number.isInteger(snapshot.selectedLandmarkIndex) ? snapshot.selectedLandmarkIndex : -1;
-  landmarkScale = clamp(Number(snapshot.landmarkScale) || 1, 0.25, 6);
-  labelScale = clamp(Number(snapshot.labelScale) || 1, 0.25, 6);
+  landmarkScale = clamp(Number(snapshot.landmarkScale) || 1, MIN_LANDMARK_SCALE, MAX_LANDMARK_SCALE);
+  labelScale = clamp(Number(snapshot.labelScale) || 1, MIN_LANDMARK_SCALE, MAX_LANDMARK_SCALE);
   displayMode = DISPLAY_MODES.includes(snapshot.displayMode) ? snapshot.displayMode : displayMode;
   allowMirroring = snapshot.allowMirroring !== false;
   distanceHeatmap = !!snapshot.distanceHeatmap;
@@ -1247,6 +1249,7 @@ function paintHit(hitInfo, mode, included) {
     mode,
     brushRadius,
     componentIndex: getComponentIndex(side),
+    screenSpace: true,
   });
 
   return setSelectionForIndices(hit.object, side, indices, included);
@@ -1382,14 +1385,8 @@ function updateViewControlsSuppression() {
 }
 
 function screenBrushRadius() {
-  if (!app.camera || !cursorState.inViewport) return 28;
-
   const rect = getViewportRect();
-  const target = app.controls?.target || new THREE.Vector3();
-  const distance = app.camera.position.distanceTo(target) || 2;
-  const fov = (app.camera.fov || 55) * Math.PI / 180;
-  const worldHeight = 2 * Math.tan(fov / 2) * distance;
-  return clamp((brushRadius / worldHeight) * rect.height, 6, 180);
+  return clamp(brushRadius, MIN_BRUSH_RADIUS, Math.max(MIN_BRUSH_RADIUS, rect.width || MAX_BRUSH_RADIUS, rect.height || MAX_BRUSH_RADIUS));
 }
 
 function updateCursorIndicator() {
@@ -1712,8 +1709,8 @@ function swapLandmarks(side, a, b) {
 }
 
 function scaleLandmarkVisuals(factor) {
-  landmarkScale = clamp(landmarkScale * factor, 0.25, 6);
-  labelScale = clamp(labelScale * factor, 0.25, 6);
+  landmarkScale = clamp(landmarkScale * factor, MIN_LANDMARK_SCALE, MAX_LANDMARK_SCALE);
+  labelScale = clamp(labelScale * factor, MIN_LANDMARK_SCALE, MAX_LANDMARK_SCALE);
   rebuildLandmarkMarkers();
 }
 
@@ -3580,8 +3577,8 @@ function renderPanel() {
     <div class="mesh-rigid-option-group">
       <span class="mesh-rigid-slider-label">Brush</span>
       <div class="range-row">
-        <input type="range" id="mesh-rigid-brush" min="${MIN_BRUSH_RADIUS}" max="${MAX_BRUSH_RADIUS}" step="0.001" value="${brushRadius}">
-        <span class="range-val" id="mesh-rigid-brush-val">${brushRadius.toFixed(3)}</span>
+        <input type="range" id="mesh-rigid-brush" min="${MIN_BRUSH_RADIUS}" max="${MAX_BRUSH_RADIUS}" step="1" value="${brushRadius}">
+        <span class="range-val" id="mesh-rigid-brush-val">${Math.round(brushRadius)}px</span>
       </div>
       <button class="btn btn-full" id="mesh-rigid-invert-active" style="margin-top:6px;">Invert active mesh region</button>
       <div class="mesh-rigid-compact-actions" style="margin-top:6px;">
@@ -3716,7 +3713,7 @@ function bindPanelEvents() {
   const brushVal = document.getElementById('mesh-rigid-brush-val');
   brushInput?.addEventListener('input', () => {
     brushRadius = clamp(Number(brushInput.value) || DEFAULT_BRUSH_RADIUS, MIN_BRUSH_RADIUS, MAX_BRUSH_RADIUS);
-    if (brushVal) brushVal.textContent = brushRadius.toFixed(3);
+    if (brushVal) brushVal.textContent = `${Math.round(brushRadius)}px`;
     refreshPreviewAtCursor();
   });
 
@@ -3877,8 +3874,8 @@ function onWheel(event) {
   brushRadius = clamp(brushRadius * factor, MIN_BRUSH_RADIUS, MAX_BRUSH_RADIUS);
   const input = document.getElementById('mesh-rigid-brush');
   const label = document.getElementById('mesh-rigid-brush-val');
-  if (input) input.value = String(brushRadius);
-  if (label) label.textContent = brushRadius.toFixed(3);
+  if (input) input.value = String(Math.round(brushRadius));
+  if (label) label.textContent = `${Math.round(brushRadius)}px`;
   refreshPreviewAtCursor();
 }
 

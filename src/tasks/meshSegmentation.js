@@ -27,9 +27,9 @@ const TASK_RENDER_OVERRIDE = 'mesh-segmentation';
 const NONE = 0;
 const NONE_COLOR = new THREE.Color('#788395');
 const CLEAR_PREVIEW_COLOR = new THREE.Color('#d8dee9');
-const DEFAULT_BRUSH_RADIUS = 0.035;
-const MIN_BRUSH_RADIUS = 0.005;
-const MAX_BRUSH_RADIUS = 0.25;
+const DEFAULT_BRUSH_RADIUS = 28;
+const MIN_BRUSH_RADIUS = 2;
+const MAX_BRUSH_RADIUS = 220;
 const STACK_LIMIT = 100;
 
 let active = false;
@@ -291,7 +291,7 @@ function applyRenderMode() {
 }
 
 function hitIndices(hit, mode) {
-  return collectHitVertices(hit, { mode, brushRadius, componentIndex });
+  return collectHitVertices(hit, { mode, brushRadius, componentIndex, screenSpace: true });
 }
 function applyRegionToVertex(mesh, index, regionId) {
   const assignment = assignmentFor(mesh);
@@ -497,18 +497,9 @@ function interactionMode() {
   return null;
 }
 
-function screenBrushRadius(point) {
+function screenBrushRadius() {
   const rect = app.dom.viewport.getBoundingClientRect();
-  if (!point || !rect.width || !rect.height) return clamp(brushRadius * 240, 6, 140);
-
-  const right = new THREE.Vector3().setFromMatrixColumn(app.camera.matrixWorld, 0).normalize();
-  const p0 = point.clone().project(app.camera);
-  const p1 = point.clone().add(right.multiplyScalar(brushRadius)).project(app.camera);
-  const x0 = (p0.x + 1) * rect.width * 0.5;
-  const y0 = (-p0.y + 1) * rect.height * 0.5;
-  const x1 = (p1.x + 1) * rect.width * 0.5;
-  const y1 = (-p1.y + 1) * rect.height * 0.5;
-  return clamp(Math.hypot(x1 - x0, y1 - y0), 6, Math.max(rect.width, rect.height));
+  return clamp(brushRadius, MIN_BRUSH_RADIUS, Math.max(MIN_BRUSH_RADIUS, rect.width || MAX_BRUSH_RADIUS, rect.height || MAX_BRUSH_RADIUS));
 }
 
 function ensureCursor() {
@@ -589,7 +580,7 @@ function updateCursor() {
     return;
   }
 
-  const radiusPx = screenBrushRadius(cursor.hitPoint);
+  const radiusPx = screenBrushRadius();
   indicator.className = `mesh-mask-cursor-indicator mesh-seg-cursor-indicator ${regionId === NONE ? 'is-remove' : ''}`;
   indicator.innerHTML = '';
   indicator.style.width = `${radiusPx * 2}px`;
@@ -674,7 +665,7 @@ function setBrushRadius(value) {
 
   brushRadius = next;
   const slider = document.getElementById('mesh-seg-brush');
-  if (slider) slider.value = String(brushRadius);
+  if (slider) slider.value = String(Math.round(brushRadius));
 
   if (cursor.inViewport && interactionMode()) {
     const rect = app.dom.viewport.getBoundingClientRect();
@@ -950,7 +941,7 @@ function updatePanelStats() {
   if (activeCount) activeCount.textContent = `${regionVertexCount().toLocaleString()} verts`;
   if (assignedCount) assignedCount.textContent = `${assignedVertexCount().toLocaleString()} assigned`;
   if (totalCount) totalCount.textContent = `${totalVertexCount().toLocaleString()} verts`;
-  if (brushValue) brushValue.textContent = brushRadius.toFixed(3);
+  if (brushValue) brushValue.textContent = `${Math.round(brushRadius)}px`;
   if (activeName) activeName.textContent = regionName(activeRegion(), activeRegionIndex);
   if (regionCount) regionCount.textContent = `${regions.length.toLocaleString()} region${regions.length === 1 ? '' : 's'}`;
 
@@ -1338,10 +1329,10 @@ function renderPanel() {
       <button id="btn-mesh-seg-clear-all" class="btn btn-danger">Clear All</button>
     </div>
 
-    <div class="section-title">Brush Width (world)</div>
+    <div class="section-title">Brush Width (screen)</div>
     <div class="range-row">
-      <input type="range" id="mesh-seg-brush" min="${MIN_BRUSH_RADIUS}" max="${MAX_BRUSH_RADIUS}" step="0.001" value="${brushRadius}">
-      <span class="range-val" id="mesh-seg-brush-val">${brushRadius.toFixed(3)}</span>
+      <input type="range" id="mesh-seg-brush" min="${MIN_BRUSH_RADIUS}" max="${MAX_BRUSH_RADIUS}" step="1" value="${brushRadius}">
+      <span class="range-val" id="mesh-seg-brush-val">${Math.round(brushRadius)}px</span>
     </div>
 
     <div class="section-title">Regions</div>

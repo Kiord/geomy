@@ -512,36 +512,68 @@ export function collectComponentVertexIndices(hit, componentIndex) {
   return data.components[connectedComponentIndex] || [];
 }
 
-export function collectBrushVertexIndices(hit, brushRadius) {
+function screenPointFromWorld(worldPoint, rect = getViewportRect()) {
+  if (!worldPoint || !app.camera || !rect?.width || !rect?.height) return null;
+
+  const ndc = worldPoint.clone().project(app.camera);
+  if (!Number.isFinite(ndc.x) || !Number.isFinite(ndc.y) || !Number.isFinite(ndc.z)) return null;
+
+  return {
+    x: (ndc.x + 1) * rect.width * 0.5,
+    y: (-ndc.y + 1) * rect.height * 0.5,
+  };
+}
+
+export function collectBrushVertexIndices(hit, brushRadius, { screenSpace = false, center = null } = {}) {
   const mesh = hit?.object;
   const position = getCanonicalPositionAttribute(mesh);
   if (!mesh?.isMesh || !position) return [];
 
-  const radiusSq = brushRadius * brushRadius;
+  const radius = Number(brushRadius);
+  if (!Number.isFinite(radius) || radius <= 0) return [];
+
   const world = new THREE.Vector3();
   const indices = [];
 
   mesh.updateMatrixWorld(true);
 
-  for (let i = 0; i < position.count; i++) {
-    world.fromBufferAttribute(position, i).applyMatrix4(mesh.matrixWorld);
-    if (world.distanceToSquared(hit.point) <= radiusSq) {
-      indices.push(i);
+  if (screenSpace) {
+    const rect = getViewportRect();
+    const centerPx = center || screenPointFromWorld(hit.point, rect);
+    if (!centerPx) return [];
+
+    const radiusSq = radius * radius;
+
+    for (let i = 0; i < position.count; i++) {
+      world.fromBufferAttribute(position, i).applyMatrix4(mesh.matrixWorld);
+      const pointPx = screenPointFromWorld(world, rect);
+      if (!pointPx) continue;
+
+      const dx = pointPx.x - centerPx.x;
+      const dy = pointPx.y - centerPx.y;
+      if (dx * dx + dy * dy <= radiusSq) {
+        indices.push(i);
+      }
+    }
+  } else {
+    const radiusSq = radius * radius;
+
+    for (let i = 0; i < position.count; i++) {
+      world.fromBufferAttribute(position, i).applyMatrix4(mesh.matrixWorld);
+      if (world.distanceToSquared(hit.point) <= radiusSq) {
+        indices.push(i);
+      }
     }
   }
 
-  // On coarse triangles, a tiny brush may hit the surface without enclosing a
-  // vertex. Include the hit triangle vertices so every click has visible effect.
-  if (!indices.length) {
-    const tri = canonicalTriangleVertexIndicesFromHit(hit) || [];
-    indices.push(...tri);
-  }
-
+  // Brush mode is strictly vertex-based: hitting a face is only used to know
+  // which mesh is under the cursor. Do not auto-paint the hit triangle when no
+  // vertex center falls inside the brush circle.
   return Array.from(new Set(indices.filter(i => Number.isInteger(i) && i >= 0 && i < position.count)));
 }
 
-export function collectHitVertexIndices(hit, { mode = 'brush', brushRadius, componentIndex }) {
+export function collectHitVertexIndices(hit, { mode = 'brush', brushRadius, componentIndex, screenSpace = false, center = null }) {
   return mode === 'component'
     ? collectComponentVertexIndices(hit, componentIndex)
-    : collectBrushVertexIndices(hit, brushRadius);
+    : collectBrushVertexIndices(hit, brushRadius, { screenSpace, center });
 }

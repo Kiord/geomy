@@ -31,9 +31,9 @@ const SELECTED_COLOR = new THREE.Color('#ff3333');
 const UNSELECTED_COLOR = new THREE.Color('#2f80ff');
 const PREVIEW_SELECT_COLOR = new THREE.Color('#ff9a9a');
 const PREVIEW_UNSELECT_COLOR = new THREE.Color('#80b3ff');
-const DEFAULT_BRUSH_RADIUS = 0.035;
-const MIN_BRUSH_RADIUS = 0.005;
-const MAX_BRUSH_RADIUS = 0.25;
+const DEFAULT_BRUSH_RADIUS = 28;
+const MIN_BRUSH_RADIUS = 2;
+const MAX_BRUSH_RADIUS = 220;
 const STACK_LIMIT = 100;
 
 let active = false;
@@ -309,11 +309,11 @@ function collectComponentVertexIndices(hit) {
 }
 
 function collectHitVertexIndices(hit, mode = 'brush') {
-  return collectHitVertices(hit, { mode, brushRadius, componentIndex });
+  return collectHitVertices(hit, { mode, brushRadius, componentIndex, screenSpace: true });
 }
 
 function collectBrushVertexIndices(hit) {
-  return collectBrushVertices(hit, brushRadius);
+  return collectBrushVertices(hit, brushRadius, { screenSpace: true });
 }
 function updatePreviewForHit(hit, selected = true, mode = getInteractionMode()) {
   clearPreview();
@@ -420,7 +420,7 @@ function updatePanelStats() {
   }
 
   if (brushEl) {
-    brushEl.textContent = brushRadius.toFixed(3);
+    brushEl.textContent = `${Math.round(brushRadius)}px`;
   }
 
   if (activeMaskEl) {
@@ -592,21 +592,9 @@ function paintSingleHit(event, selected, mode) {
   return changed;
 }
 
-function screenBrushRadius(point) {
+function screenBrushRadius() {
   const rect = getViewportRect();
-  if (!point || !rect.width || !rect.height) return clamp(brushRadius * 240, 6, 140);
-
-  const cameraRight = new THREE.Vector3().setFromMatrixColumn(app.camera.matrixWorld, 0).normalize();
-  const p0 = point.clone().project(app.camera);
-  const p1 = point.clone().add(cameraRight.multiplyScalar(brushRadius)).project(app.camera);
-
-  const x0 = (p0.x + 1) * rect.width * 0.5;
-  const y0 = (-p0.y + 1) * rect.height * 0.5;
-  const x1 = (p1.x + 1) * rect.width * 0.5;
-  const y1 = (-p1.y + 1) * rect.height * 0.5;
-
-  const px = Math.hypot(x1 - x0, y1 - y0);
-  return clamp(px, 6, Math.max(rect.width, rect.height));
+  return clamp(brushRadius, MIN_BRUSH_RADIUS, Math.max(MIN_BRUSH_RADIUS, rect.width || MAX_BRUSH_RADIUS, rect.height || MAX_BRUSH_RADIUS));
 }
 
 function ensureCursorIndicator() {
@@ -705,7 +693,7 @@ function updateCursorIndicator() {
     return;
   }
 
-  const radiusPx = screenBrushRadius(cursorState.hitPoint);
+  const radiusPx = screenBrushRadius();
   indicator.className = `mesh-mask-cursor-indicator ${painting?.selected === false ? 'is-remove' : ''}`;
   indicator.innerHTML = '';
   indicator.style.width = `${radiusPx * 2}px`;
@@ -827,7 +815,7 @@ function setBrushRadius(value) {
   brushRadius = next;
 
   const slider = document.getElementById('mesh-mask-brush');
-  if (slider) slider.value = String(brushRadius);
+  if (slider) slider.value = String(Math.round(brushRadius));
 
   refreshPreviewAtCursor();
   updatePanelStats();
@@ -1598,10 +1586,10 @@ function renderPanel() {
       <button id="btn-mesh-mask-invert" class="btn">Invert</button>
     </div>
 
-    <div class="section-title">Brush Width (world)</div>
+    <div class="section-title">Brush Width (screen)</div>
     <div class="range-row">
-      <input type="range" id="mesh-mask-brush" min="${MIN_BRUSH_RADIUS}" max="${MAX_BRUSH_RADIUS}" step="0.001" value="${brushRadius}">
-      <span class="range-val" id="mesh-mask-brush-val">${brushRadius.toFixed(3)}</span>
+      <input type="range" id="mesh-mask-brush" min="${MIN_BRUSH_RADIUS}" max="${MAX_BRUSH_RADIUS}" step="1" value="${brushRadius}">
+      <span class="range-val" id="mesh-mask-brush-val">${Math.round(brushRadius)}px</span>
     </div>
 
 
