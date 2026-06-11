@@ -20,6 +20,12 @@ import {
   restoreVisualizationRenderMode as restoreSharedVisualizationRenderMode,
   setVertexColor as setColor,
 } from './meshTaskUtils.js';
+import {
+  collectPrecomputedGeodesicBrushVertexIndices,
+  geodesicBrushMemoryEstimateBytes,
+  geodesicBrushStatus,
+  precomputeGeodesicBrush,
+} from './geodesicBrushLut.js';
 import '../css/meshMasking.css';
 import '../css/meshSegmentation.css';
 
@@ -34,6 +40,8 @@ const STACK_LIMIT = 100;
 
 let active = false;
 let brushRadius = DEFAULT_BRUSH_RADIUS;
+let useGeodesicBrush = false;
+let geodesicBrushRequestId = 0;
 let regions = [];
 let activeRegionIndex = 0;
 let nextRegionId = 1;
@@ -291,6 +299,11 @@ function applyRenderMode() {
 }
 
 function hitIndices(hit, mode) {
+  if (mode === 'brush' && useGeodesicBrush) {
+    const geodesic = collectPrecomputedGeodesicBrushVertexIndices(hit, brushRadius);
+    if (geodesic !== null) return geodesic;
+  }
+
   return collectHitVertices(hit, { mode, brushRadius, componentIndex, screenSpace: true });
 }
 function applyRegionToVertex(mesh, index, regionId) {
@@ -675,6 +688,91 @@ function setBrushRadius(value) {
   updateCursor();
 }
 
+function formatBytes(bytes) {
+  if (!Number.isFinite(bytes) || bytes <= 0) return '0 MB';
+  const mb = bytes / (1024 * 1024);
+  if (mb < 1024) return `${Math.ceil(mb).toLocaleString()} MB`;
+  return `${(mb / 1024).toFixed(1)} GB`;
+}
+
+function updateGeodesicBrushStatus() {
+  const statusEl = document.getElementById('mesh-seg-geodesic-status');
+  const progressEl = document.getElementById('mesh-seg-geodesic-progress');
+  if (!statusEl && !progressEl) return;
+
+  const status = geodesicBrushStatus(meshes());
+  const percent = Math.round((status.progress || 0) * 100);
+  const activeLabel = useGeodesicBrush
+    ? (status.ready ? status.label : `${status.label} · screen brush until ready`)
+    : 'Screen brush active';
+
+  if (statusEl) statusEl.textContent = activeLabel;
+  if (progressEl) {
+    progressEl.value = percent;
+    progressEl.style.display = status.building ? 'block' : 'none';
+  }
+}
+
+async function setUseGeodesicBrush(value) {
+  const nextEnabled = !!value;
+  const requestId = ++geodesicBrushRequestId;
+  const checkbox = document.getElementById('mesh-seg-geodesic-brush');
+
+  useGeodesicBrush = nextEnabled;
+  if (checkbox) checkbox.checked = useGeodesicBrush;
+  updateGeodesicBrushStatus();
+  if (cursor.inViewport && interactionMode()) {
+    const rect = app.dom.viewport.getBoundingClientRect();
+    refreshHover(rect.left + cursor.x, rect.top + cursor.y);
+  }
+  updateCursor();
+
+  if (!nextEnabled) return;
+
+  const currentMeshes = meshes();
+  if (!currentMeshes.length) {
+    alert('Load a mesh before enabling the geodesic brush.');
+    if (requestId === geodesicBrushRequestId) {
+      useGeodesicBrush = false;
+      if (checkbox) checkbox.checked = false;
+      updateGeodesicBrushStatus();
+    }
+    return;
+  }
+
+  try {
+    const ok = await precomputeGeodesicBrush(currentMeshes, {
+      confirmLarge(totalVertices) {
+        const bytes = geodesicBrushMemoryEstimateBytes(totalVertices);
+        return window.confirm(`This mesh has ${totalVertices.toLocaleString()} vertices. All-pairs geodesic precompute can take a while and needs about ${formatBytes(bytes)} for the LUT. Continue?`);
+      },
+      onProgress: updateGeodesicBrushStatus,
+    });
+
+    if (requestId !== geodesicBrushRequestId) return;
+    if (!ok) {
+      useGeodesicBrush = false;
+      if (checkbox) checkbox.checked = false;
+    }
+  } catch (error) {
+    console.error(error);
+    if (requestId === geodesicBrushRequestId) {
+      useGeodesicBrush = false;
+      if (checkbox) checkbox.checked = false;
+      alert(error?.message || 'Geodesic brush precompute failed.');
+    }
+  } finally {
+    if (requestId === geodesicBrushRequestId) {
+      updateGeodesicBrushStatus();
+      if (cursor.inViewport && interactionMode()) {
+        const rect = app.dom.viewport.getBoundingClientRect();
+        refreshHover(rect.left + cursor.x, rect.top + cursor.y);
+      }
+      updateCursor();
+    }
+  }
+}
+
 function preventTaskEvent(event) {
   event.preventDefault();
   event.stopPropagation();
@@ -947,6 +1045,7 @@ function updatePanelStats() {
 
   updateRegionListState();
   updateStackButtons();
+  updateGeodesicBrushStatus();
 }
 
 function escapeHtml(value) {
@@ -1320,7 +1419,7 @@ function renderPanel() {
   app.dom.taskContent.innerHTML = `
     <div class="task-heading">
       <h3>Mesh Segmentation</h3>
-      <span class="task-help" tabindex="0" data-tip="Partition vertices into exclusive regions. Alt+left-drag assigns the active region; Alt+right-drag clears. Shift handles connected components. Alt+wheel changes brush width. Ctrl+Z/Y undo/redo.">?</span>
+      <span class="task-help" tabindex="0" data-tip="Partition vertices into exclusive regions. Alt+left-drag assigns the active region; Alt+right-drag clears. Shift handles connected components. Alt+wheel changes brush width. Enable geodesic brush to precompute an all-pairs distance LUT; painting switches to geodesic as soon as the LUT is ready. Ctrl+Z/Y undo/redo.">?</span>
     </div>
 
     <div class="section-title">Edit Segmentation</div>
@@ -1334,6 +1433,9 @@ function renderPanel() {
       <input type="range" id="mesh-seg-brush" min="${MIN_BRUSH_RADIUS}" max="${MAX_BRUSH_RADIUS}" step="1" value="${brushRadius}">
       <span class="range-val" id="mesh-seg-brush-val">${Math.round(brushRadius)}px</span>
     </div>
+    <label class="checkbox-label"><input type="checkbox" id="mesh-seg-geodesic-brush" ${useGeodesicBrush ? 'checked' : ''}> Use geodesic brush</label>
+    <progress id="mesh-seg-geodesic-progress" max="100" value="0" style="width:100%;display:none;"></progress>
+    <div class="hint" id="mesh-seg-geodesic-status"></div>
 
     <div class="section-title">Regions</div>
     <div class="btn-row mesh-mask-io-row">
@@ -1372,6 +1474,10 @@ function renderPanel() {
 
   const brushSlider = document.getElementById('mesh-seg-brush');
   brushSlider?.addEventListener('input', () => setBrushRadius(brushSlider.value));
+
+  const geodesicBrush = document.getElementById('mesh-seg-geodesic-brush');
+  geodesicBrush?.addEventListener('change', () => setUseGeodesicBrush(geodesicBrush.checked));
+
   document.getElementById('btn-mesh-seg-add')?.addEventListener('click', addRegion);
   document.getElementById('btn-mesh-seg-clear-active')?.addEventListener('click', () => {
     if (regionVertexCount() === 0 || window.confirm('Clear the active region assignments?')) clearActiveRegion();
