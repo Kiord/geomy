@@ -562,16 +562,16 @@ export class BrushSphereIndicator {
     this.fillMaterial = new THREE.MeshBasicMaterial({
       color: 0x5aa9ff,
       transparent: true,
-      opacity: 0.16,
-      depthTest: true,
+      opacity: 0.14,
+      depthTest: false,
       depthWrite: false,
       side: THREE.DoubleSide,
     });
     this.wireMaterial = new THREE.MeshBasicMaterial({
       color: 0x5aa9ff,
       transparent: true,
-      opacity: 0.42,
-      depthTest: true,
+      opacity: 0.55,
+      depthTest: false,
       depthWrite: false,
       wireframe: true,
     });

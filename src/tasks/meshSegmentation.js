@@ -19,6 +19,7 @@ import {
   getTriangleCount as triangleCount,
   isTextInputTarget,
   restoreVisualizationRenderMode as restoreSharedVisualizationRenderMode,
+  screenRadiusToWorldRadius,
   setVertexColor as setColor,
 } from './meshTaskUtils.js';
 import {
@@ -617,7 +618,9 @@ function updateCursor() {
 
   const radiusPx = screenBrushRadius();
 
-  if (useGeodesicBrush) {
+  const geodesicReady = useGeodesicBrush && geodesicBrushStatus(meshes()).ready;
+
+  if (geodesicReady) {
     hideBrushSphereIndicator();
     indicator.className = `mesh-mask-cursor-indicator mesh-seg-cursor-indicator ${regionId === NONE ? 'is-remove' : ''}`;
     indicator.innerHTML = '';

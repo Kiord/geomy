@@ -22,6 +22,7 @@ import { downloadBlob } from '../util.js';
 import { downloadNpy, parseBundleArrays, readArrayBundle } from '../io/numpyBundle.js';
 import { loadCanonicalOBJFile } from '../io/objCanonicalLoader.js';
 import {
+  BrushSphereIndicator,
   MeshComponentIndex,
   TemporaryVisualizationState,
   clamp,
@@ -32,6 +33,7 @@ import {
   getMeshLabel,
   isTextInputTarget,
   roundNumber,
+  screenRadiusToWorldRadius,
   setVertexColor,
   vectorPayload,
 } from './meshTaskUtils.js';
@@ -73,6 +75,7 @@ let draggingLandmark = null;
 let selectedLandmarkSide = null;
 let selectedLandmarkIndex = -1;
 let cursorIndicatorEl = null;
+let brushSphereIndicator = null;
 let viewControlsSuppressed = false;
 let viewControlsPreviousEnabled = true;
 let suppressedControls = null;
@@ -1332,6 +1335,35 @@ function hideCursorIndicator(indicator = cursorIndicatorEl) {
   indicator.style.height = '';
 }
 
+function ensureBrushSphereIndicator() {
+  if (!brushSphereIndicator) {
+    brushSphereIndicator = new BrushSphereIndicator({ name: 'mesh-rigid-brush-sphere' });
+  }
+  return brushSphereIndicator;
+}
+
+function hideBrushSphereIndicator({ dispose = false } = {}) {
+  if (!brushSphereIndicator) return;
+  if (dispose) {
+    brushSphereIndicator.dispose();
+    brushSphereIndicator = null;
+  } else {
+    brushSphereIndicator.hide();
+  }
+}
+
+function currentPaintBrushHit() {
+  const side = editableSideFromDisplay();
+  if (!side || !cursorState.hasPointerPosition) return null;
+
+  const hitInfo = hitFromEvent({
+    clientX: cursorState.clientX,
+    clientY: cursorState.clientY,
+  }, side);
+
+  return hitInfo?.hit || null;
+}
+
 function editableSideFromDisplay() {
   return displayMode === 'source' || displayMode === 'target' ? displayMode : null;
 }
@@ -1395,6 +1427,7 @@ function updateCursorIndicator() {
 
   if (!active || !cursorState.inViewport || isEditingDisabledByDisplay()) {
     hideCursorIndicator(indicator);
+    hideBrushSphereIndicator();
     setCanvasCursor('');
     return;
   }
@@ -1407,6 +1440,7 @@ function updateCursorIndicator() {
 
     if (!descriptor) {
       hideCursorIndicator(indicator);
+      hideBrushSphereIndicator();
       setCanvasCursor('');
       return;
     }
@@ -1419,28 +1453,49 @@ function updateCursorIndicator() {
     indicator.style.left = '0';
     indicator.style.top = '0';
     indicator.style.transform = `translate(${cursorState.x + 14}px, ${cursorState.y + 14}px)`;
+    hideBrushSphereIndicator();
     return;
   }
 
   if (interactionMode !== 'paint' || (!cursorState.alt && !cursorState.shift)) {
     hideCursorIndicator(indicator);
+    hideBrushSphereIndicator();
     setCanvasCursor('');
     return;
   }
 
-  const radius = screenBrushRadius();
-  const className = cursorState.shift
-    ? 'mesh-rigid-cursor-indicator is-component'
-    : 'mesh-rigid-cursor-indicator';
+  if (cursorState.shift && !cursorState.alt) {
+    hideBrushSphereIndicator();
+    setCanvasCursor('crosshair');
+    indicator.innerHTML = '';
+    indicator.className = 'mesh-rigid-cursor-indicator is-component';
+    indicator.style.transform = '';
+    indicator.style.width = 'auto';
+    indicator.style.height = 'auto';
+    indicator.style.left = `${cursorState.x + 14}px`;
+    indicator.style.top = `${cursorState.y + 14}px`;
+    return;
+  }
+
+  const hit = currentPaintBrushHit();
+  const radiusPx = screenBrushRadius();
+  const radiusWorld = hit ? screenRadiusToWorldRadius(hit, radiusPx) : 0;
+
+  indicator.innerHTML = '';
+  indicator.className = 'mesh-rigid-cursor-indicator is-hidden';
+  indicator.style.transform = '';
+  indicator.style.width = '';
+  indicator.style.height = '';
+  indicator.style.left = '0';
+  indicator.style.top = '0';
+
+  if (hit && Number.isFinite(radiusWorld) && radiusWorld > 0) {
+    ensureBrushSphereIndicator().set(hit.point, radiusWorld, { remove: painting?.included === false });
+  } else {
+    hideBrushSphereIndicator();
+  }
 
   setCanvasCursor('crosshair');
-  indicator.innerHTML = '';
-  indicator.className = className;
-  indicator.style.transform = '';
-  indicator.style.width = `${radius * 2}px`;
-  indicator.style.height = `${radius * 2}px`;
-  indicator.style.left = `${cursorState.x}px`;
-  indicator.style.top = `${cursorState.y}px`;
 }
 
 function syncCursorFromEvent(event) {
@@ -1497,6 +1552,8 @@ function resetCursorIndicator({ remove = false } = {}) {
   setCanvasCursor('');
   restoreViewControls();
   draggingLandmark = null;
+
+  hideBrushSphereIndicator({ dispose: remove });
 
   if (!cursorIndicatorEl) return;
   if (remove) {
@@ -4042,4 +4099,5 @@ export const meshRigidAlignTask = {
     forceRigidOpacityControls();
   },
 };
+
 

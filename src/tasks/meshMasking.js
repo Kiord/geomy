@@ -737,7 +737,9 @@ function updateCursorIndicator() {
 
   const radiusPx = screenBrushRadius();
 
-  if (useGeodesicBrush) {
+  const geodesicReady = useGeodesicBrush && geodesicBrushStatus(getCurrentMeshes()).ready;
+
+  if (geodesicReady) {
     hideBrushSphereIndicator();
     indicator.className = `mesh-mask-cursor-indicator ${painting?.selected === false ? 'is-remove' : ''}`;
     indicator.innerHTML = '';
