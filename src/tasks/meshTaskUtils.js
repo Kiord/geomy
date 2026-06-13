@@ -1,6 +1,9 @@
 import * as THREE from 'three';
 import { app, updateEnvironmentUsage } from '../app.js';
 
+const BRUSH_EPS = 1e-8;
+const _brushCameraLocal = new THREE.Vector3();
+
 export function clamp(value, min, max) {
   return Math.max(min, Math.min(max, value));
 }
@@ -524,10 +527,103 @@ function screenPointFromWorld(worldPoint, rect = getViewportRect()) {
   };
 }
 
+
+export function screenRadiusToWorldRadius(hit, radiusPx) {
+  const radius = Number(radiusPx);
+  if (!Number.isFinite(radius) || radius <= 0 || !hit?.point || !app.camera) return 0;
+
+  const rect = getViewportRect();
+  const height = Math.max(1, rect?.height || app.renderer?.domElement?.clientHeight || window.innerHeight || 1);
+  const camera = app.camera;
+
+  if (camera.isOrthographicCamera) {
+    return radius * Math.abs(camera.top - camera.bottom) / Math.max(BRUSH_EPS, camera.zoom) / height;
+  }
+
+  _brushCameraLocal.copy(hit.point).applyMatrix4(camera.matrixWorldInverse);
+  const depth = Math.max(BRUSH_EPS, Math.abs(_brushCameraLocal.z));
+  const fov = THREE.MathUtils.degToRad(camera.fov || 50);
+  return radius * (2 * Math.tan(fov * 0.5) * depth) / height;
+}
+
+export class BrushSphereIndicator {
+  constructor({ name = 'geomy-brush-sphere' } = {}) {
+    this.name = name;
+    this.group = null;
+    this.geometry = null;
+    this.fillMaterial = null;
+    this.wireMaterial = null;
+  }
+
+  ensure() {
+    if (this.group) return this.group;
+
+    this.geometry = new THREE.IcosahedronGeometry(1, 2);
+    this.fillMaterial = new THREE.MeshBasicMaterial({
+      color: 0x5aa9ff,
+      transparent: true,
+      opacity: 0.16,
+      depthTest: true,
+      depthWrite: false,
+      side: THREE.DoubleSide,
+    });
+    this.wireMaterial = new THREE.MeshBasicMaterial({
+      color: 0x5aa9ff,
+      transparent: true,
+      opacity: 0.42,
+      depthTest: true,
+      depthWrite: false,
+      wireframe: true,
+    });
+
+    const fill = new THREE.Mesh(this.geometry, this.fillMaterial);
+    const wire = new THREE.Mesh(this.geometry, this.wireMaterial);
+
+    this.group = new THREE.Group();
+    this.group.name = this.name;
+    this.group.renderOrder = 1000;
+    this.group.visible = false;
+    this.group.add(fill, wire);
+    app.scene?.add(this.group);
+    return this.group;
+  }
+
+  set(center, radius, { remove = false } = {}) {
+    const r = Number(radius);
+    if (!center || !Number.isFinite(r) || r <= 0) {
+      this.hide();
+      return;
+    }
+
+    const group = this.ensure();
+    const color = remove ? 0xff5a66 : 0x5aa9ff;
+    this.fillMaterial?.color.setHex(color);
+    this.wireMaterial?.color.setHex(color);
+    group.position.copy(center);
+    group.scale.setScalar(r);
+    group.visible = true;
+  }
+
+  hide() {
+    if (this.group) this.group.visible = false;
+  }
+
+  dispose() {
+    if (this.group?.parent) this.group.parent.remove(this.group);
+    this.geometry?.dispose?.();
+    this.fillMaterial?.dispose?.();
+    this.wireMaterial?.dispose?.();
+    this.group = null;
+    this.geometry = null;
+    this.fillMaterial = null;
+    this.wireMaterial = null;
+  }
+}
+
 export function collectBrushVertexIndices(hit, brushRadius, { screenSpace = false, center = null } = {}) {
   const mesh = hit?.object;
   const position = getCanonicalPositionAttribute(mesh);
-  if (!mesh?.isMesh || !position) return [];
+  if (!mesh?.isMesh || !position || !hit?.point) return [];
 
   const radius = Number(brushRadius);
   if (!Number.isFinite(radius) || radius <= 0) return [];
@@ -537,38 +633,22 @@ export function collectBrushVertexIndices(hit, brushRadius, { screenSpace = fals
 
   mesh.updateMatrixWorld(true);
 
-  if (screenSpace) {
-    const rect = getViewportRect();
-    const centerPx = center || screenPointFromWorld(hit.point, rect);
-    if (!centerPx) return [];
+  const radiusWorld = screenSpace ? screenRadiusToWorldRadius(hit, radius) : radius;
+  if (!Number.isFinite(radiusWorld) || radiusWorld <= 0) return [];
 
-    const radiusSq = radius * radius;
+  const radiusSq = radiusWorld * radiusWorld;
+  const centerWorld = hit.point;
 
-    for (let i = 0; i < position.count; i++) {
-      world.fromBufferAttribute(position, i).applyMatrix4(mesh.matrixWorld);
-      const pointPx = screenPointFromWorld(world, rect);
-      if (!pointPx) continue;
-
-      const dx = pointPx.x - centerPx.x;
-      const dy = pointPx.y - centerPx.y;
-      if (dx * dx + dy * dy <= radiusSq) {
-        indices.push(i);
-      }
-    }
-  } else {
-    const radiusSq = radius * radius;
-
-    for (let i = 0; i < position.count; i++) {
-      world.fromBufferAttribute(position, i).applyMatrix4(mesh.matrixWorld);
-      if (world.distanceToSquared(hit.point) <= radiusSq) {
-        indices.push(i);
-      }
+  for (let i = 0; i < position.count; i++) {
+    world.fromBufferAttribute(position, i).applyMatrix4(mesh.matrixWorld);
+    if (world.distanceToSquared(centerWorld) <= radiusSq) {
+      indices.push(i);
     }
   }
 
   // Brush mode is strictly vertex-based: hitting a face is only used to know
-  // which mesh is under the cursor. Do not auto-paint the hit triangle when no
-  // vertex center falls inside the brush circle.
+  // which mesh is under the cursor. The default brush is a 3D sphere centered
+  // at the cursor surfel; it does not paint through unrelated depth layers.
   return Array.from(new Set(indices.filter(i => Number.isInteger(i) && i >= 0 && i < position.count)));
 }
 

@@ -5,6 +5,7 @@ import { GEOMY_VERSION } from '../version.js';
 import { raycast, downloadBlob } from '../util.js';
 import { downloadArrayBundle, jsonEntry, npyEntry, parseBundleArrays, readArrayBundle } from '../io/numpyBundle.js';
 import {
+  BrushSphereIndicator,
   MeshComponentIndex,
   MeshRenderBackup,
   TemporaryVisualizationState,
@@ -47,6 +48,7 @@ let activeRegionIndex = 0;
 let nextRegionId = 1;
 let painting = null;
 let cursorIndicatorEl = null;
+let brushSphereIndicator = null;
 let lights = [];
 let controlsSuppressed = false;
 let controlsPreviousEnabled = true;
@@ -528,6 +530,24 @@ function ensureCursor() {
   return cursorIndicatorEl;
 }
 
+
+function ensureBrushSphereIndicator() {
+  if (!brushSphereIndicator) {
+    brushSphereIndicator = new BrushSphereIndicator({ name: 'mesh-seg-brush-sphere' });
+  }
+  return brushSphereIndicator;
+}
+
+function hideBrushSphereIndicator({ dispose = false } = {}) {
+  if (!brushSphereIndicator) return;
+  if (dispose) {
+    brushSphereIndicator.dispose();
+    brushSphereIndicator = null;
+  } else {
+    brushSphereIndicator.hide();
+  }
+}
+
 function setCanvasCursor(value = '') {
   const canvas = app.renderer?.domElement;
   if (canvas) canvas.style.cursor = value;
@@ -577,6 +597,7 @@ function updateCursor() {
       indicator.style.height = '';
       indicator.style.transform = '';
     }
+    hideBrushSphereIndicator();
     setCanvasCursor('');
     return;
   }
@@ -589,16 +610,31 @@ function updateCursor() {
     indicator.style.height = 'auto';
     indicator.style.transform = `translate(${cursor.x + 14}px, ${cursor.y + 14}px)`;
     indicator.innerHTML = `<span>Component</span><small>Shift: LC assign · RC clear · ${action} · ${count}</small>`;
+    hideBrushSphereIndicator();
     setCanvasCursor('crosshair');
     return;
   }
 
   const radiusPx = screenBrushRadius();
-  indicator.className = `mesh-mask-cursor-indicator mesh-seg-cursor-indicator ${regionId === NONE ? 'is-remove' : ''}`;
+
+  if (useGeodesicBrush) {
+    hideBrushSphereIndicator();
+    indicator.className = `mesh-mask-cursor-indicator mesh-seg-cursor-indicator ${regionId === NONE ? 'is-remove' : ''}`;
+    indicator.innerHTML = '';
+    indicator.style.width = `${radiusPx * 2}px`;
+    indicator.style.height = `${radiusPx * 2}px`;
+    indicator.style.transform = `translate(${cursor.x}px, ${cursor.y}px) translate(-50%, -50%)`;
+    setCanvasCursor('crosshair');
+    return;
+  }
+
+  const radiusWorld = screenRadiusToWorldRadius({ point: cursor.hitPoint }, radiusPx);
+  indicator.className = 'mesh-mask-cursor-indicator mesh-seg-cursor-indicator is-hidden';
   indicator.innerHTML = '';
-  indicator.style.width = `${radiusPx * 2}px`;
-  indicator.style.height = `${radiusPx * 2}px`;
-  indicator.style.transform = `translate(${cursor.x}px, ${cursor.y}px) translate(-50%, -50%)`;
+  indicator.style.width = '';
+  indicator.style.height = '';
+  indicator.style.transform = '';
+  ensureBrushSphereIndicator().set(cursor.hitPoint, radiusWorld, { remove: regionId === NONE });
   setCanvasCursor('crosshair');
 }
 
@@ -662,6 +698,7 @@ function resetCursor({ remove = false } = {}) {
   clearPreview();
   setCanvasCursor('');
   restoreControls();
+  hideBrushSphereIndicator({ dispose: remove });
 
   if (!cursorIndicatorEl) return;
   if (remove) {
