@@ -15,6 +15,25 @@ import {
 import { GEOMY_VERSION } from '../version.js';
 import { raycast, downloadBlob } from '../util.js';
 import { downloadArrayBundle, jsonEntry, npyEntry, parseBundleArrays, readArrayBundle } from '../io/numpyBundle.js';
+import {
+  arrayByName,
+  assertArrayFileKind,
+  downloadNumericText,
+  downloadSimpleNpy,
+  checkedDialogValue,
+  dialogFile,
+  arrayRows,
+  bindDialogModeVisibility,
+  isSimpleArrayFile,
+  openTaskDataDialog,
+  parseVertexIndexList,
+  readJson,
+  readSimpleArrayFile,
+  safeDataFilename,
+  statusText,
+  stripKnownExtension,
+  setDialogRadioOptionDisabled,
+} from '../io/taskDataDaemon.js';
 import { canonicalTriangleVertexIndicesFromHit, canonicalVertexWorldPosition, getCanonicalPositionAttribute, rootLocalPointFromWorld, worldPointFromRootLocal } from './meshTaskUtils.js';
 import '../css/landmarkPicking.css';
 
@@ -1343,25 +1362,196 @@ function unbindViewportEvents() {
 
 async function readLandmarkImportPayload(file) {
   const lower = String(file?.name || '').toLowerCase();
+
+  if (isSimpleArrayFile(file)) {
+    return landmarkPayloadFromSimpleVertexArray(await readSimpleArrayFile(file), file);
+  }
+
   if (lower.endsWith('.npz') || lower.endsWith('.zip')) {
     const entries = await readArrayBundle(file);
     const arrays = parseBundleArrays(entries);
     return landmarkPayloadFromArrays(arrays);
   }
 
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => {
-      try { resolve(JSON.parse(String(reader.result || ''))); }
-      catch (error) { reject(error); }
-    };
-    reader.onerror = () => reject(new Error(`Failed to read ${file?.name || 'landmark file'}.`));
-    reader.readAsText(file);
-  });
+  return readJson(file);
 }
 
-function arrayByName(arrays, name) {
-  return arrays.get(name) || arrays.get(`landmarks/${name}`) || arrays.get(name.replace(/^landmarks\//, ''));
+function simpleVertexLandmarkStatus() {
+  if (!landmarks.length) {
+    return { canUse: false, reason: 'No landmarks to save as vertex indices.' };
+  }
+
+  const invalid = landmarks.find(landmark => {
+    const binding = landmark.binding || {};
+    const type = binding.snapMode || landmark.snapMode;
+    return type !== 'vertex' || !Number.isInteger(binding.vertexIndex);
+  });
+
+  if (invalid) {
+    return {
+      canUse: false,
+      reason: 'Simple .npy/.txt save is available only when every landmark is vertex-snapped.',
+    };
+  }
+
+  return {
+    canUse: true,
+    reason: '',
+    ready: `${landmarks.length} vertex landmark${landmarks.length === 1 ? '' : 's'} ready for simple .npy/.txt I/O.`,
+  };
+}
+
+function simpleVertexLandmarkIndices() {
+  const status = simpleVertexLandmarkStatus();
+  if (!status.canUse) throw new Error(status.reason);
+
+  return landmarks.map(landmark => Number(landmark.binding.vertexIndex));
+}
+
+function makeVertexLandmark(index, vertexIndex, mesh) {
+  const position = vertexWorldPosition(mesh, vertexIndex);
+  if (!position) return null;
+
+  return {
+    id: nextLandmarkId + index,
+    createdAt: nextLandmarkId + index,
+    name: `Landmark ${index + 1}`,
+    position,
+    snapMode: 'vertex',
+    binding: bindingFromImportedSnap(
+      { type: 'vertex', meshUuid: mesh.uuid, meshName: getMeshLabel(mesh), vertexIndex },
+      'vertex',
+      position,
+      mesh
+    ),
+  };
+}
+
+function landmarkPayloadFromSimpleVertexArray(array, file) {
+  const meshes = getCurrentMeshes();
+  if (meshes.length !== 1) {
+    throw new Error('Simple vertex landmark files can be loaded only when exactly one mesh is loaded.');
+  }
+
+  const mesh = meshes[0];
+  const vertexCount = getCanonicalPositionAttribute(mesh)?.count || 0;
+  const result = parseVertexIndexList(array, vertexCount, { unique: false, sort: false });
+  const imported = result.indices
+    .map((vertexIndex, index) => makeVertexLandmark(index, vertexIndex, mesh))
+    .filter(Boolean);
+
+  if (!imported.length) {
+    throw new Error('No valid vertex landmark indices were found.');
+  }
+
+  return {
+    format: 'geomy-landmarks',
+    version: GEOMY_VERSION,
+    coordinateSpaces: { absolute: 'world', vertex: 'mesh-vertex-index' },
+    landmarks: imported.map((landmark, index) => ({
+      id: index + 1,
+      name: landmark.name,
+      snapMode: 'vertex',
+      worldPosition: {
+        x: roundExportNumber(landmark.position.x),
+        y: roundExportNumber(landmark.position.y),
+        z: roundExportNumber(landmark.position.z),
+      },
+      snap: {
+        type: 'vertex',
+        meshUuid: mesh.uuid,
+        meshName: getMeshLabel(mesh),
+        vertexIndex: landmark.binding.vertexIndex,
+      },
+    })),
+    skipped: result.skipped,
+    sourceName: stripKnownExtension(file?.name, 'Imported Landmarks'),
+  };
+}
+
+function landmarkPayloadFromVertexBaryArrays(verticesArray, baryArray, sourceName = 'Imported Landmarks') {
+  const meshes = getCurrentMeshes();
+  if (meshes.length !== 1) {
+    throw new Error('Mixed landmark arrays can be loaded only when exactly one mesh is loaded.');
+  }
+
+  const mesh = meshes[0];
+  const position = getCanonicalPositionAttribute(mesh);
+  if (!position) throw new Error('Current mesh has no vertex positions.');
+
+  const vertexRows = verticesArray.rows || arrayRows(verticesArray.data, verticesArray.shape);
+  const baryRows = baryArray.rows || arrayRows(baryArray.data, baryArray.shape);
+  const count = Math.min(vertexRows.length, baryRows.length);
+  const imported = [];
+  let skipped = 0;
+
+  for (let i = 0; i < count; i++) {
+    const ids = vertexRows[i].slice(0, 3).map(Number);
+    const weights = baryRows[i].slice(0, 3).map(Number);
+    const validIds = ids.filter(index => Number.isInteger(index) && index >= 0 && index < position.count);
+    const n = validIds.length;
+
+    if (n < 1) {
+      skipped += 1;
+      continue;
+    }
+
+    const normalizedWeights = [0, 0, 0];
+    for (let k = 0; k < n; k++) {
+      normalizedWeights[k] = Number.isFinite(weights[k]) ? weights[k] : (k === 0 ? 1 : 0);
+    }
+
+    const world = new THREE.Vector3();
+    for (let k = 0; k < n; k++) {
+      const point = vertexWorldPosition(mesh, validIds[k]);
+      if (point) world.add(point.multiplyScalar(normalizedWeights[k]));
+    }
+
+    const snap = n === 1
+      ? {
+          type: 'vertex',
+          meshUuid: mesh.uuid,
+          meshName: getMeshLabel(mesh),
+          vertexIndex: validIds[0],
+        }
+      : {
+          type: n === 2 ? 'edge' : 'triangle',
+          meshUuid: mesh.uuid,
+          meshName: getMeshLabel(mesh),
+          vertexIndices: validIds,
+          barycentric: n === 2
+            ? { a: normalizedWeights[0], b: normalizedWeights[1] }
+            : { a: normalizedWeights[0], b: normalizedWeights[1], c: normalizedWeights[2] },
+          t: n === 2 ? normalizedWeights[1] : undefined,
+        };
+
+    imported.push({
+      id: imported.length + 1,
+      name: `Landmark ${imported.length + 1}`,
+      snapMode: snap.type,
+      worldPosition: {
+        x: roundExportNumber(world.x),
+        y: roundExportNumber(world.y),
+        z: roundExportNumber(world.z),
+      },
+      snap,
+    });
+  }
+
+  if (vertexRows.length !== baryRows.length) {
+    skipped += Math.abs(vertexRows.length - baryRows.length);
+  }
+
+  if (!imported.length) throw new Error('No valid landmark rows were found.');
+
+  return {
+    format: 'geomy-landmarks',
+    version: GEOMY_VERSION,
+    coordinateSpaces: { absolute: 'world' },
+    landmarks: imported,
+    skipped,
+    sourceName,
+  };
 }
 
 function baryArrayValue(bary, row, col) {
@@ -1513,25 +1703,254 @@ function exportLandmarksByFormat(format) {
   else exportJSON();
 }
 
+function exportSimpleVertexLandmarks(kind = 'npy') {
+  try {
+    const indices = simpleVertexLandmarkIndices();
+    const stem = safeDataFilename(app.currentFileName || 'landmarks', 'landmarks');
+
+    if (kind === 'txt') {
+      downloadNumericText(indices.map(index => [index]), `${stem}-landmark-vertices.txt`);
+      return;
+    }
+
+    downloadSimpleNpy(new Int32Array(indices), [indices.length], 'int32', `${stem}-landmark-vertices.npy`);
+  } catch (error) {
+    alert(error?.message || 'Simple vertex landmark export is not available.');
+  }
+}
+
+function landmarkVertexBaryArrays() {
+  if (!landmarks.length) throw new Error('No landmarks to save.');
+
+  const vertices = new Int32Array(landmarks.length * 3);
+  const barycentric = new Float32Array(landmarks.length * 3);
+  vertices.fill(-1);
+  barycentric.fill(-1);
+
+  landmarks.forEach((landmark, index) => {
+    const binding = landmark.binding || {};
+    const type = binding.snapMode || landmark.snapMode;
+    const offset = index * 3;
+
+    if (type === 'vertex' && Number.isInteger(binding.vertexIndex)) {
+      vertices[offset] = binding.vertexIndex;
+      barycentric[offset] = 1;
+      return;
+    }
+
+    if (type === 'edge' && Array.isArray(binding.vertexIndices) && binding.vertexIndices.length >= 2) {
+      const t = Number.isFinite(Number(binding.t)) ? Number(binding.t) : Number(binding.barycentric?.b ?? 0);
+      vertices[offset] = Number(binding.vertexIndices[0]);
+      vertices[offset + 1] = Number(binding.vertexIndices[1]);
+      barycentric[offset] = 1 - t;
+      barycentric[offset + 1] = t;
+      return;
+    }
+
+    if (type === 'triangle' && Array.isArray(binding.vertexIndices) && binding.vertexIndices.length >= 3) {
+      vertices[offset] = Number(binding.vertexIndices[0]);
+      vertices[offset + 1] = Number(binding.vertexIndices[1]);
+      vertices[offset + 2] = Number(binding.vertexIndices[2]);
+      barycentric[offset] = Number(binding.barycentric?.a ?? 0);
+      barycentric[offset + 1] = Number(binding.barycentric?.b ?? 0);
+      barycentric[offset + 2] = Number(binding.barycentric?.c ?? 0);
+      return;
+    }
+
+    throw new Error('Mixed array export needs every landmark to have a vertex, edge, or triangle binding.');
+  });
+
+  return { vertices, barycentric, shape: [landmarks.length, 3] };
+}
+
+function exportLandmarkVertexBaryArrays(kind = 'npy') {
+  try {
+    const { vertices, barycentric, shape } = landmarkVertexBaryArrays();
+    const stem = safeDataFilename(app.currentFileName || 'landmarks', 'landmarks');
+
+    if (kind === 'txt') {
+      downloadNumericText(arrayRows(vertices, shape), `${stem}-landmark-vertices.txt`);
+      downloadNumericText(arrayRows(barycentric, shape), `${stem}-landmark-barycentric.txt`);
+      return;
+    }
+
+    downloadSimpleNpy(vertices, shape, 'int32', `${stem}-landmark-vertices.npy`);
+    downloadSimpleNpy(barycentric, shape, 'float32', `${stem}-landmark-barycentric.npy`);
+  } catch (error) {
+    alert(error?.message || 'Mixed landmark array export is not available.');
+  }
+}
+
+function updateLandmarkIoStatus() {
+  const status = simpleVertexLandmarkStatus();
+  const el = document.getElementById('landmark-io-status');
+  const npyButton = document.getElementById('btn-landmark-save-npy');
+  const txtButton = document.getElementById('btn-landmark-save-txt');
+
+  if (el) el.textContent = statusText(status.canUse, status.reason, status.ready);
+  [npyButton, txtButton].forEach(button => {
+    if (!button) return;
+    button.disabled = !status.canUse;
+    button.title = status.canUse ? 'Save vertex landmark indices.' : status.reason;
+  });
+}
+
+function openLandmarkLoadDialog() {
+  openTaskDataDialog({
+    title: 'Load Landmark Data',
+    html: `
+      <div class="task-data-dialog-section">
+        <div class="task-data-dialog-section-title">Source</div>
+        <label class="radio-label"><input type="radio" name="landmark-load-mode" value="json" checked> JSON</label>
+        <label class="radio-label"><input type="radio" name="landmark-load-mode" value="npz"> NPZ bundle</label>
+        <label class="radio-label"><input type="radio" name="landmark-load-mode" value="vertex"> Vertex indices</label>
+        <label class="radio-label"><input type="radio" name="landmark-load-mode" value="mixed"> Simplex + barycentric arrays</label>
+      </div>
+      <div class="task-data-dialog-section">
+        <div class="task-data-dialog-grid">
+          <label data-task-data-visible="json">JSON</label><input data-task-data-visible="json" id="landmark-load-json-file" type="file" accept=".json,application/json">
+          <label data-task-data-visible="npz">NPZ</label><input data-task-data-visible="npz" id="landmark-load-npz-file" type="file" accept=".npz,.zip,application/zip">
+          <label data-task-data-visible="vertex mixed">Array type</label>
+          <div data-task-data-visible="vertex mixed">
+            <label class="radio-label"><input type="radio" name="landmark-load-array-kind" value="npy" checked> NPY</label>
+            <label class="radio-label"><input type="radio" name="landmark-load-array-kind" value="text"> Text</label>
+          </div>
+          <label data-task-data-visible="vertex">Vertex file</label><input data-task-data-visible="vertex" id="landmark-load-vertex-file" type="file" accept=".npy,.txt,.csv,.tsv">
+          <label data-task-data-visible="mixed">Simplex (L, 3)</label><input data-task-data-visible="mixed" id="landmark-load-mixed-vertices-file" type="file" accept=".npy,.txt,.csv,.tsv">
+          <label data-task-data-visible="mixed">Barycentric (L, 3)</label><input data-task-data-visible="mixed" id="landmark-load-mixed-bary-file" type="file" accept=".npy,.txt,.csv,.tsv">
+        </div>
+      </div>
+      <div class="task-data-dialog-actions">
+        <button type="button" class="btn btn-export" data-landmark-load-apply>Load</button>
+      </div>
+    `,
+    onMount(root, { close, setMessage }) {
+      bindDialogModeVisibility(root, 'landmark-load-mode');
+      root.querySelector('[data-landmark-load-apply]')?.addEventListener('click', async () => {
+        try {
+          const mode = checkedDialogValue(root, 'landmark-load-mode');
+          const arrayKind = checkedDialogValue(root, 'landmark-load-array-kind') || 'npy';
+          if (mode === 'json') {
+            await importLandmarkFile(dialogFile(root, '#landmark-load-json-file'));
+          } else if (mode === 'npz') {
+            await importLandmarkFile(dialogFile(root, '#landmark-load-npz-file'));
+          } else if (mode === 'vertex') {
+            assertArrayFileKind(dialogFile(root, '#landmark-load-vertex-file'), arrayKind);
+            const payload = landmarkPayloadFromSimpleVertexArray(
+              await readSimpleArrayFile(dialogFile(root, '#landmark-load-vertex-file')),
+              dialogFile(root, '#landmark-load-vertex-file')
+            );
+            applyLandmarkPayload(payload);
+          } else {
+            const verticesFile = dialogFile(root, '#landmark-load-mixed-vertices-file');
+            const baryFile = dialogFile(root, '#landmark-load-mixed-bary-file');
+            assertArrayFileKind(verticesFile, arrayKind);
+            assertArrayFileKind(baryFile, arrayKind);
+            const payload = landmarkPayloadFromVertexBaryArrays(
+              await readSimpleArrayFile(verticesFile),
+              await readSimpleArrayFile(baryFile),
+              stripKnownExtension(verticesFile?.name || 'Imported Landmarks')
+            );
+            applyLandmarkPayload(payload);
+          }
+          close();
+        } catch (error) {
+          console.error('Failed to load landmark data:', error);
+          setMessage(error?.message || 'Failed to load landmark data.', 'error');
+        }
+      });
+    },
+  });
+}
+
+function openLandmarkSaveDialog() {
+  openTaskDataDialog({
+    title: 'Save Landmark Data',
+    html: `
+      <div class="task-data-dialog-section">
+        <div class="task-data-dialog-section-title">Destination</div>
+        <label class="radio-label"><input type="radio" name="landmark-save-mode" value="json" checked> JSON</label>
+        <label class="radio-label"><input type="radio" name="landmark-save-mode" value="npz"> NPZ bundle</label>
+        <label class="radio-label"><input type="radio" name="landmark-save-mode" value="arrays"> Per-array files</label>
+      </div>
+      <div class="task-data-dialog-section">
+        <div class="task-data-dialog-grid">
+          <label data-task-data-visible="arrays">Array schema</label>
+          <div data-task-data-visible="arrays">
+            <label class="radio-label"><input type="radio" name="landmark-save-schema" value="vertex" checked> Vertex indices only</label>
+            <label class="radio-label"><input type="radio" name="landmark-save-schema" value="mixed"> Simplex (L, 3) + barycentric (L, 3)</label>
+          </div>
+          <label data-task-data-visible="arrays">Array file type</label>
+          <div data-task-data-visible="arrays">
+            <label class="radio-label"><input type="radio" name="landmark-save-array-kind" value="npy" checked> NPY</label>
+            <label class="radio-label"><input type="radio" name="landmark-save-array-kind" value="txt"> Text</label>
+          </div>
+        </div>
+      </div>
+      <div class="task-data-dialog-actions">
+        <button type="button" class="btn btn-export" data-landmark-save-apply>Save</button>
+      </div>
+    `,
+     onMount(root, { close, setMessage }) {
+      bindDialogModeVisibility(root, 'landmark-save-mode');
+
+      const vertexStatus = simpleVertexLandmarkStatus();
+      setDialogRadioOptionDisabled(
+        root,
+        'landmark-save-schema',
+        'vertex',
+        !vertexStatus.canUse,
+        vertexStatus.reason
+      );
+
+      root.querySelector('[data-landmark-save-apply]')?.addEventListener('click', () => {
+        try {
+          const mode = checkedDialogValue(root, 'landmark-save-mode');
+          const kind = checkedDialogValue(root, 'landmark-save-array-kind') || 'npy';
+          const schema = checkedDialogValue(root, 'landmark-save-schema') || 'vertex';
+
+          if (mode === 'json') exportJSON();
+          else if (mode === 'npz') exportLandmarksArrayBundle('npz');
+          else if (schema === 'vertex') exportSimpleVertexLandmarks(kind);
+          else exportLandmarkVertexBaryArrays(kind);
+          close();
+        } catch (error) {
+          console.error('Failed to save landmark data:', error);
+          setMessage(error?.message || 'Failed to save landmark data.', 'error');
+        }
+      });
+    },
+  });
+}
+
 async function importLandmarkFile(file) {
   if (!file) return;
   try {
     const payload = await readLandmarkImportPayload(file);
-    const absoluteSpace = payload?.coordinateSpaces?.absolute || payload?.coordinateSpace || 'asset-local';
-    const imported = (payload?.landmarks || []).map((entry, index) => normalizeImportedLandmark(entry, index, nextLandmarkId + index, absoluteSpace)).filter(Boolean);
-    if (!imported.length) throw new Error('No valid landmarks found.');
-    commit('import landmarks', () => {
-      landmarks = imported;
-      nextLandmarkId = Math.max(nextLandmarkId, Math.max(0, ...landmarks.map(l => l.id)) + 1);
-      selectedIndex = -1;
-      rebuildMarkers();
-    });
+    applyLandmarkPayload(payload);
   } catch (error) {
     console.error('Failed to import landmarks:', error);
     alert(error?.message || 'Failed to import landmarks.');
   } finally {
     const input = document.getElementById('landmark-import-file');
     if (input) input.value = '';
+  }
+}
+
+function applyLandmarkPayload(payload) {
+  const absoluteSpace = payload?.coordinateSpaces?.absolute || payload?.coordinateSpace || 'asset-local';
+  const imported = (payload?.landmarks || []).map((entry, index) => normalizeImportedLandmark(entry, index, nextLandmarkId + index, absoluteSpace)).filter(Boolean);
+  if (!imported.length) throw new Error('No valid landmarks found.');
+  commit('import landmarks', () => {
+    landmarks = imported;
+    nextLandmarkId = Math.max(nextLandmarkId, Math.max(0, ...landmarks.map(l => l.id)) + 1);
+    selectedIndex = -1;
+    rebuildMarkers();
+  });
+  updateLandmarkIoStatus();
+
+  if (payload?.skipped > 0) {
+    alert(`Imported landmarks. Skipped ${payload.skipped} invalid entr${payload.skipped === 1 ? 'y' : 'ies'}.`);
   }
 }
 
@@ -1643,6 +2062,7 @@ function renderList() {
         Alt + left click to place<br>
         <small>Use T / V / E to change snap mode.</small>
       </div>`;
+    updateLandmarkIoStatus();
     return;
   }
 
@@ -1717,6 +2137,8 @@ function renderList() {
       removeLandmarkAt(parseInt(button.dataset.idx, 10));
     });
   });
+
+  updateLandmarkIoStatus();
 }
 
 function renderPanel() {
@@ -1749,23 +2171,14 @@ function renderPanel() {
     <div id="pick-list" class="pick-list landmark-list"></div>
 
     <div class="section-title section-title-with-help">
-      <span>Export</span>
-      <span class="section-help" tabindex="0" data-tip="Imports/exports absolute world positions plus triangle, vertex, and edge snap bindings.">?</span>
-    </div>
-    <div class="material-row landmark-io-row">
-      <label>Format</label>
-      <select id="landmark-io-format">
-        <option value="npz">Numpy (NPZ)</option>
-        <option value="zip">Numpy (ZIP)</option>
-        <option value="json">JSON</option>
-      </select>
-      <span></span>
+      <span>Save / Load</span>
+      <span class="section-help" tabindex="0" data-tip="Load auto-detects JSON, NPZ/ZIP, and simple vertex-index NPY/TXT files. Simple save is enabled only when every landmark is vertex-snapped. Full save keeps triangle, vertex, and edge snap bindings.">?</span>
     </div>
     <div class="btn-row landmark-io-row">
-      <button id="btn-import-json" class="btn">Import</button>
-      <button id="btn-json" class="btn btn-export">Export</button>
+      <button id="btn-import-json" class="btn">Load</button>
+      <button id="btn-json" class="btn btn-export">Save</button>
     </div>
-    <input id="landmark-import-file" class="landmark-file-input" type="file" accept=".json,.npz,.zip,application/json,application/zip">
+    <input id="landmark-import-file" class="landmark-file-input" type="file" accept=".json,.npz,.zip,.npy,.txt,.csv,.tsv,application/json,application/zip">
   `;
 
   // Snap mode radios
@@ -1784,14 +2197,12 @@ function renderPanel() {
   // Import / export
   const importInput = document.getElementById('landmark-import-file');
   document.getElementById('btn-import-json')?.addEventListener('click', () => {
-    importInput?.click();
+    openLandmarkLoadDialog();
   });
   importInput?.addEventListener('change', () => {
     importLandmarkFile(importInput.files?.[0]);
   });
-  document.getElementById('btn-json')?.addEventListener('click', () => {
-    exportLandmarksByFormat(document.getElementById('landmark-io-format')?.value || 'json');
-  });
+  document.getElementById('btn-json')?.addEventListener('click', openLandmarkSaveDialog);
 
   // Landmark scale slider
   const scaleSlider = document.getElementById('landmark-scale');

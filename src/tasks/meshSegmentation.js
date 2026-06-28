@@ -5,6 +5,21 @@ import { GEOMY_VERSION } from '../version.js';
 import { raycast, downloadBlob } from '../util.js';
 import { downloadArrayBundle, jsonEntry, npyEntry, parseBundleArrays, readArrayBundle } from '../io/numpyBundle.js';
 import {
+  assertArrayFileKind,
+  bindDialogModeVisibility,
+  checkedDialogValue,
+  dialogFile,
+  downloadNumericText,
+  downloadSimpleNpy,
+  isSimpleArrayFile,
+  openTaskDataDialog,
+  parseDenseLabelsOrPairs,
+  readSimpleArrayFile,
+  safeDataFilename,
+  statusText,
+  stripKnownExtension,
+} from '../io/taskDataDaemon.js';
+import {
   BrushSphereIndicator,
   MeshComponentIndex,
   MeshRenderBackup,
@@ -1086,6 +1101,7 @@ function updatePanelStats() {
   updateRegionListState();
   updateStackButtons();
   updateGeodesicBrushStatus();
+  updateSegmentationIoStatus();
 }
 
 function escapeHtml(value) {
@@ -1202,6 +1218,269 @@ function exportByFormat(format) {
   else exportJSON();
 }
 
+function simpleSegmentationStatus() {
+  const currentMeshes = meshes();
+  if (currentMeshes.length !== 1) {
+    return {
+      canUse: false,
+      reason: 'Simple .npy/.txt segmentation I/O is available only when exactly one mesh is loaded.',
+    };
+  }
+
+  return {
+    canUse: true,
+    reason: '',
+    ready: 'Simple segmentation I/O stores one integer label per vertex; 0 means unassigned.',
+  };
+}
+
+function activeSegmentationLabels() {
+  const status = simpleSegmentationStatus();
+  if (!status.canUse) throw new Error(status.reason);
+
+  const mesh = meshes()[0];
+  const vertexCount = getCanonicalVertexCount(mesh);
+  const assignment = assignmentFor(mesh);
+  const labels = new Int32Array(vertexCount);
+
+  if (assignment) {
+    for (let i = 0; i < vertexCount; i++) labels[i] = assignment[i] || NONE;
+  }
+
+  return { mesh, labels };
+}
+
+function exportSegmentationArray({ kind = 'npy', schema = 'dense' } = {}) {
+  try {
+    const { labels } = activeSegmentationLabels();
+    const stem = safeDataFilename(app.currentFileName || 'mesh-segmentation', 'mesh-segmentation');
+
+    if (schema === 'pairs') {
+      const rows = [];
+      for (let i = 0; i < labels.length; i++) {
+        if (labels[i] !== NONE) rows.push([i, labels[i]]);
+      }
+
+      if (kind === 'txt') {
+        downloadNumericText(rows, `${stem}-segmentation-pairs.txt`);
+      } else {
+        downloadSimpleNpy(new Int32Array(rows.flat()), [rows.length, 2], 'int32', `${stem}-segmentation-pairs.npy`);
+      }
+      return;
+    }
+
+    if (kind === 'txt') {
+      downloadNumericText(Array.from(labels, label => [label]), `${stem}-segmentation-labels.txt`);
+    } else {
+      downloadSimpleNpy(labels, [labels.length], 'int32', `${stem}-segmentation-labels.npy`);
+    }
+  } catch (error) {
+    alert(error?.message || 'Simple segmentation export is not available.');
+  }
+}
+
+function coerceSegmentationArraySchema(array, schema = 'auto') {
+  if (schema === 'auto') return array;
+
+  const rows = array.rows || [];
+  if (schema === 'dense') {
+    return {
+      ...array,
+      rows: rows.map(row => [row[0]]),
+      shape: [rows.length],
+    };
+  }
+
+  return {
+    ...array,
+    rows: rows.map(row => [row[0], row[1]]),
+    shape: [rows.length, 2],
+  };
+}
+
+async function parseSimpleSegmentationFile(file, schema = 'auto') {
+  const currentMeshes = meshes();
+  if (currentMeshes.length !== 1) {
+    throw new Error('Simple segmentation files can be loaded only when exactly one mesh is loaded.');
+  }
+
+  const mesh = currentMeshes[0];
+  const parsed = coerceSegmentationArraySchema(await readSimpleArrayFile(file), schema);
+  const result = parseDenseLabelsOrPairs(parsed, getCanonicalVertexCount(mesh));
+  const positiveLabels = Array.from(new Set(Array.from(result.labels).filter(label => label > NONE))).sort((a, b) => a - b);
+
+  if (!positiveLabels.length) {
+    throw new Error('No non-zero segmentation labels were found.');
+  }
+
+  const importedRegions = positiveLabels.map(label => makeRegion(`Region ${label}`, defaultRegionColor(label), label));
+  const valid = new Set(positiveLabels);
+  const assignment = new Int32Array(result.labels.length);
+  let skipped = result.skipped;
+
+  for (let i = 0; i < result.labels.length; i++) {
+    const label = result.labels[i];
+    if (label === NONE) continue;
+    if (!valid.has(label)) {
+      skipped += 1;
+      continue;
+    }
+    assignment[i] = label;
+  }
+
+  return {
+    regions: importedRegions,
+    assignments: new Map([[mesh, assignment]]),
+    activeRegionIndex: 0,
+    skipped,
+    sourceName: stripKnownExtension(file?.name, 'Imported Segmentation'),
+  };
+}
+
+function updateSegmentationIoStatus() {
+  const status = simpleSegmentationStatus();
+  const el = document.getElementById('mesh-seg-io-status');
+  const npyButton = document.getElementById('btn-mesh-seg-save-npy');
+  const txtButton = document.getElementById('btn-mesh-seg-save-txt');
+
+  if (el) el.textContent = statusText(status.canUse, status.reason, status.ready);
+  [npyButton, txtButton].forEach(button => {
+    if (!button) return;
+    button.disabled = !status.canUse;
+    button.title = status.canUse ? 'Save vertex labels as simple segmentation data.' : status.reason;
+  });
+}
+
+function applyImportedSegmentation(imported) {
+  if (assignedVertexCount() > 0 && !window.confirm('Replace the current segmentation with the imported one?')) return false;
+
+  commit('import segmentation', () => {
+    regions = imported.regions;
+    activeRegionIndex = imported.activeRegionIndex;
+    assignmentsByMesh.clear();
+    imported.assignments.forEach((assignment, mesh) => assignmentsByMesh.set(mesh, assignment));
+    nextRegionId = Math.max(1, Math.max(0, ...regions.map(region => region.id)) + 1);
+  }, { renderRegions: true });
+  updateSegmentationIoStatus();
+
+  if (imported.skipped > 0) {
+    alert(`Imported segmentation. Skipped ${imported.skipped} invalid entr${imported.skipped === 1 ? 'y' : 'ies'}.`);
+  }
+
+  return true;
+}
+
+function openSegmentationLoadDialog() {
+  openTaskDataDialog({
+    title: 'Load Mesh Segmentation Data',
+    html: `
+      <div class="task-data-dialog-section">
+        <div class="task-data-dialog-section-title">Source</div>
+        <label class="radio-label"><input type="radio" name="mesh-seg-load-mode" value="json" checked> JSON</label>
+        <label class="radio-label"><input type="radio" name="mesh-seg-load-mode" value="npz"> NPZ bundle</label>
+        <label class="radio-label"><input type="radio" name="mesh-seg-load-mode" value="array"> Array file</label>
+      </div>
+      <div class="task-data-dialog-section">
+        <div class="task-data-dialog-grid">
+          <label data-task-data-visible="json">JSON</label><input data-task-data-visible="json" id="mesh-seg-load-json-file" type="file" accept=".json,application/json">
+          <label data-task-data-visible="npz">NPZ</label><input data-task-data-visible="npz" id="mesh-seg-load-npz-file" type="file" accept=".npz,.zip,application/zip">
+          <label data-task-data-visible="array">Array type</label>
+          <div data-task-data-visible="array">
+            <label class="radio-label"><input type="radio" name="mesh-seg-load-array-kind" value="npy" checked> NPY</label>
+            <label class="radio-label"><input type="radio" name="mesh-seg-load-array-kind" value="text"> Text</label>
+          </div>
+          <label data-task-data-visible="array">Array</label><input data-task-data-visible="array" id="mesh-seg-load-array-file" type="file" accept=".npy,.txt,.csv,.tsv">
+          <label data-task-data-visible="array">Array schema</label>
+          <div data-task-data-visible="array">
+            <label class="radio-label"><input type="radio" name="mesh-seg-load-array-schema" value="auto" checked> Auto</label>
+            <label class="radio-label"><input type="radio" name="mesh-seg-load-array-schema" value="dense"> Dense labels</label>
+            <label class="radio-label"><input type="radio" name="mesh-seg-load-array-schema" value="pairs"> Vertex-label pairs</label>
+          </div>
+        </div>
+      </div>
+      <div class="task-data-dialog-actions">
+        <button type="button" class="btn btn-export" data-mesh-seg-load-apply>Load</button>
+      </div>
+    `,
+    onMount(root, { close, setMessage }) {
+      bindDialogModeVisibility(root, 'mesh-seg-load-mode');
+      root.querySelector('[data-mesh-seg-load-apply]')?.addEventListener('click', async () => {
+        try {
+          const mode = checkedDialogValue(root, 'mesh-seg-load-mode');
+          let imported;
+          if (mode === 'json') {
+            imported = parseSegmentation(await readJSON(dialogFile(root, '#mesh-seg-load-json-file')));
+          } else if (mode === 'npz') {
+            imported = await parseSegmentationBundle(dialogFile(root, '#mesh-seg-load-npz-file'));
+          } else {
+            const arrayFile = dialogFile(root, '#mesh-seg-load-array-file');
+            assertArrayFileKind(arrayFile, checkedDialogValue(root, 'mesh-seg-load-array-kind') || 'npy');
+            imported = await parseSimpleSegmentationFile(
+              arrayFile,
+              checkedDialogValue(root, 'mesh-seg-load-array-schema') || 'auto'
+            );
+          }
+          if (applyImportedSegmentation(imported)) close();
+        } catch (error) {
+          console.error('Failed to load mesh segmentation data:', error);
+          setMessage(error?.message || 'Failed to load mesh segmentation data.', 'error');
+        }
+      });
+    },
+  });
+}
+
+function openSegmentationSaveDialog() {
+  openTaskDataDialog({
+    title: 'Save Mesh Segmentation Data',
+    html: `
+      <div class="task-data-dialog-section">
+        <div class="task-data-dialog-section-title">Destination</div>
+        <label class="radio-label"><input type="radio" name="mesh-seg-save-mode" value="json" checked> JSON</label>
+        <label class="radio-label"><input type="radio" name="mesh-seg-save-mode" value="npz"> NPZ bundle</label>
+        <label class="radio-label"><input type="radio" name="mesh-seg-save-mode" value="array"> Array file</label>
+      </div>
+      <div class="task-data-dialog-section">
+        <div class="task-data-dialog-grid">
+          <label data-task-data-visible="array">Array schema</label>
+          <div data-task-data-visible="array">
+            <label class="radio-label"><input type="radio" name="mesh-seg-save-array-schema" value="dense" checked> Dense labels</label>
+            <label class="radio-label"><input type="radio" name="mesh-seg-save-array-schema" value="pairs"> Vertex-label pairs</label>
+          </div>
+          <label data-task-data-visible="array">Array file type</label>
+          <div data-task-data-visible="array">
+            <label class="radio-label"><input type="radio" name="mesh-seg-save-array-kind" value="npy" checked> NPY</label>
+            <label class="radio-label"><input type="radio" name="mesh-seg-save-array-kind" value="txt"> Text</label>
+          </div>
+        </div>
+      </div>
+      <div class="task-data-dialog-actions">
+        <button type="button" class="btn btn-export" data-mesh-seg-save-apply>Save</button>
+      </div>
+    `,
+    onMount(root, { close, setMessage }) {
+      bindDialogModeVisibility(root, 'mesh-seg-save-mode');
+      root.querySelector('[data-mesh-seg-save-apply]')?.addEventListener('click', () => {
+        try {
+          const mode = checkedDialogValue(root, 'mesh-seg-save-mode');
+          if (mode === 'json') exportJSON();
+          else if (mode === 'npz') exportArrayBundle('npz');
+          else {
+            exportSegmentationArray({
+              schema: checkedDialogValue(root, 'mesh-seg-save-array-schema') || 'dense',
+              kind: checkedDialogValue(root, 'mesh-seg-save-array-kind') || 'npy',
+            });
+          }
+          close();
+        } catch (error) {
+          console.error('Failed to save mesh segmentation data:', error);
+          setMessage(error?.message || 'Failed to save mesh segmentation data.', 'error');
+        }
+      });
+    },
+  });
+}
+
 function arrayEntryByNames(arrays, names) {
   for (const name of names) {
     if (arrays.has(name)) return arrays.get(name);
@@ -1269,21 +1548,12 @@ async function importSegmentationFiles(fileList) {
   if (!file) return;
 
   const isBundle = /\.(npz|zip)$/i.test(file.name || '');
+  const isSimple = isSimpleArrayFile(file);
   try {
-    const imported = isBundle ? await parseSegmentationBundle(file) : parseSegmentation(await readJSON(file));
-    if (assignedVertexCount() > 0 && !window.confirm('Replace the current segmentation with the imported one?')) return;
-
-    commit('import segmentation', () => {
-      regions = imported.regions;
-      activeRegionIndex = imported.activeRegionIndex;
-      assignmentsByMesh.clear();
-      imported.assignments.forEach((assignment, mesh) => assignmentsByMesh.set(mesh, assignment));
-      nextRegionId = Math.max(1, Math.max(0, ...regions.map(region => region.id)) + 1);
-    }, { renderRegions: true });
-
-    if (imported.skipped > 0) {
-      alert(`Imported segmentation. Skipped ${imported.skipped} invalid entr${imported.skipped === 1 ? 'y' : 'ies'}.`);
-    }
+    const imported = isSimple
+      ? await parseSimpleSegmentationFile(file)
+      : (isBundle ? await parseSegmentationBundle(file) : parseSegmentation(await readJSON(file)));
+    applyImportedSegmentation(imported);
   } catch (error) {
     console.error('Failed to import mesh segmentation:', error);
     alert(error?.message || 'Failed to import mesh segmentation.');
@@ -1494,22 +1764,13 @@ function renderPanel() {
 
     <div class="section-title section-title-with-help">
       <span>Save / Load</span>
-      <span class="section-help" tabindex="0" data-tip="Export saves all regions and vertex assignments. Import replaces the current segmentation.">?</span>
-    </div>
-    <div class="material-row mesh-mask-io-row">
-      <label>Format</label>
-      <select id="mesh-seg-io-format">
-        <option value="npz">Numpy (NPZ)</option>
-        <option value="zip">Numpy (ZIP)</option>
-        <option value="json">JSON</option>
-      </select>
-      <span></span>
+      <span class="section-help" tabindex="0" data-tip="Load auto-detects JSON, NPZ/ZIP, and simple NPY/TXT files. Simple files store integer labels per vertex, with 0 unassigned. Full save keeps region colors and mesh metadata.">?</span>
     </div>
     <div class="btn-row mesh-mask-io-row">
-      <button id="btn-mesh-seg-import" class="btn">Import</button>
-      <button id="btn-mesh-seg-export" class="btn btn-export">Export</button>
+      <button id="btn-mesh-seg-import" class="btn">Load</button>
+      <button id="btn-mesh-seg-export" class="btn btn-export">Save</button>
     </div>
-    <input id="mesh-seg-import-file" class="mesh-mask-file-input" type="file" accept=".json,.npz,.zip,application/json,application/zip">
+    <input id="mesh-seg-import-file" class="mesh-mask-file-input" type="file" accept=".json,.npz,.zip,.npy,.txt,.csv,.tsv,application/json,application/zip">
   `;
 
   const brushSlider = document.getElementById('mesh-seg-brush');
@@ -1525,14 +1786,15 @@ function renderPanel() {
   document.getElementById('btn-mesh-seg-clear-all')?.addEventListener('click', () => {
     if (assignedVertexCount() === 0 || window.confirm('Clear all region assignments?')) clearAll();
   });
-  document.getElementById('btn-mesh-seg-export')?.addEventListener('click', () => exportByFormat(document.getElementById('mesh-seg-io-format')?.value || 'json'));
+  document.getElementById('btn-mesh-seg-export')?.addEventListener('click', openSegmentationSaveDialog);
 
   const importInput = document.getElementById('mesh-seg-import-file');
-  document.getElementById('btn-mesh-seg-import')?.addEventListener('click', () => importInput?.click());
+  document.getElementById('btn-mesh-seg-import')?.addEventListener('click', openSegmentationLoadDialog);
   importInput?.addEventListener('change', () => importSegmentationFiles(importInput.files));
 
   renderRegionList();
   updatePanelStats();
+  updateSegmentationIoStatus();
 }
 
 function resetForNewFile() {

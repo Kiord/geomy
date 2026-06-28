@@ -248,6 +248,143 @@ label.disabled input { cursor: not-allowed; }
   line-height: 1.2;
 }
 
+.task-data-dialog-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 70;
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding: calc(var(--topbar-active-height, 46px) + 56px) 16px 24px;
+  overflow: auto;
+  background: rgba(0, 0, 0, 0.18);
+  pointer-events: auto;
+}
+
+.task-data-dialog {
+  box-sizing: border-box;
+  width: min(620px, calc(100vw - 32px));
+  max-height: calc(100vh - var(--topbar-active-height, 46px) - 44px);
+  overflow: auto;
+  background: var(--panel-bg);
+  color: var(--text);
+  border: 1px solid var(--text);
+  box-shadow: var(--shadow-panel);
+  padding: 12px;
+  transform: none;
+}
+
+.task-data-dialog-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 10px;
+}
+
+.task-data-dialog-header h3 {
+  margin: 0;
+  font-size: 0.86rem;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+}
+
+.task-data-dialog-body {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.task-data-dialog-section {
+  border: 1px solid var(--border);
+  padding: 9px;
+  background: var(--panel-bg);
+}
+
+.task-data-dialog-section-title {
+  margin: 0 0 6px;
+  font-size: 0.76rem;
+  font-weight: 700;
+  color: var(--text);
+}
+
+.task-data-dialog-grid {
+  display: grid;
+  grid-template-columns: 130px minmax(0, 1fr);
+  gap: 7px 8px;
+  align-items: center;
+}
+
+.task-data-dialog-grid label {
+  color: var(--text-dim);
+  font-size: 0.73rem;
+}
+
+.task-data-dialog-grid input[type="file"],
+.task-data-dialog-grid select {
+  min-width: 0;
+  width: 100%;
+}
+
+.task-data-file-picker {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.task-data-file-picker input[type="file"] {
+  flex: 0 0 auto;
+  width: 118px;
+  max-width: 118px;
+  color: transparent;
+}
+
+.task-data-file-picker input[type="file"]::file-selector-button {
+  color: var(--text);
+}
+
+.task-data-file-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-dim);
+  font-size: 0.72rem;
+}
+
+.radio-label.is-disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.radio-label.is-disabled input {
+  cursor: not-allowed;
+}
+
+.task-data-dialog-actions {
+  display: flex;
+  gap: 7px;
+  justify-content: flex-end;
+  margin-top: 8px;
+}
+
+.task-data-dialog-message {
+  min-height: 18px;
+  margin-top: 8px;
+  color: var(--text-dim);
+  font-size: 0.74rem;
+  line-height: 1.35;
+}
+
+.task-data-dialog-message[data-type="error"] {
+  color: var(--danger);
+}
+
+.task-data-dialog-message[data-type="success"] {
+  color: var(--accent);
+}
+
 
 .material-scalar-control.is-hidden,
 .material-map-note.is-hidden {

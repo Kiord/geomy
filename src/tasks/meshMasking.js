@@ -5,6 +5,23 @@ import { GEOMY_VERSION } from '../version.js';
 import { raycast, downloadBlob } from '../util.js';
 import { downloadArrayBundle, jsonEntry, npyEntry, parseBundleArrays, readArrayBundle } from '../io/numpyBundle.js';
 import {
+  assertArrayFileKind,
+  arrayEntryByNames,
+  bindDialogModeVisibility,
+  checkedDialogValue,
+  denseMaskFromIndices,
+  dialogFile,
+  downloadNumericText,
+  downloadSimpleNpy,
+  isSimpleArrayFile,
+  openTaskDataDialog,
+  parseMaskArrayBySchema,
+  readJson,
+  readSimpleArrayFile,
+  safeDataFilename,
+  statusText,
+} from '../io/taskDataDaemon.js';
+import {
   BrushSphereIndicator,
   MeshComponentIndex,
   MeshRenderBackup,
@@ -455,6 +472,7 @@ function updatePanelStats() {
   updateMaskListState();
   updateStackButtons();
   updateGeodesicBrushStatus();
+  updateMaskIoStatus();
 }
 
 function serializeMaskSnapshot(mask) {
@@ -1101,12 +1119,209 @@ function exportByFormat(format) {
   else exportJSON();
 }
 
-function arrayEntryByNames(arrays, names) {
-  for (const name of names) {
-    if (arrays.has(name)) return arrays.get(name);
+function simpleMaskStatus() {
+  const currentMeshes = getCurrentMeshes();
+  if (currentMeshes.length !== 1) {
+    return {
+      canUse: false,
+      reason: 'Simple .npy/.txt mask I/O is available only when exactly one mesh is loaded.',
+    };
   }
-  return null;
+
+  return {
+    canUse: true,
+    reason: '',
+    ready: 'Simple mask I/O accepts dense boolean arrays or selected vertex indices.',
+  };
 }
+
+function activeMaskSimpleData() {
+  const status = simpleMaskStatus();
+  if (!status.canUse) throw new Error(status.reason);
+
+  const mesh = getCurrentMeshes()[0];
+  const vertexCount = getCanonicalVertexCount(mesh);
+  const { dense, selected } = denseMaskFromIndices(
+    vertexCount,
+    getMaskSelection(getActiveMask(), mesh)
+  );
+
+  return { mesh, vertexCount, selected, dense };
+}
+
+function exportMaskArray({ kind = 'npy', schema = 'dense' } = {}) {
+  try {
+    const { selected, dense } = activeMaskSimpleData();
+    const stem = safeDataFilename(maskName(getActiveMask(), activeMaskIndex), 'mesh-mask');
+
+    if (schema === 'indices') {
+      if (kind === 'txt') {
+        downloadNumericText(selected.map(index => [index]), `${stem}-indices.txt`);
+      } else {
+        downloadSimpleNpy(new Int32Array(selected), [selected.length], 'int32', `${stem}-indices.npy`);
+      }
+      return;
+    }
+
+    if (kind === 'txt') {
+      downloadNumericText(Array.from(dense, value => [value]), `${stem}-mask.txt`);
+    } else {
+      downloadSimpleNpy(dense, [dense.length], 'bool', `${stem}-mask.npy`);
+    }
+  } catch (error) {
+    alert(error?.message || 'Simple mask export is not available.');
+  }
+}
+
+
+
+async function parseSimpleMaskFile(file, schema = 'auto') {
+  const currentMeshes = getCurrentMeshes();
+  if (currentMeshes.length !== 1) {
+    throw new Error('Simple mask files can be loaded only when exactly one mesh is loaded.');
+  }
+
+  const mesh = currentMeshes[0];
+  const parsed = await readSimpleArrayFile(file);
+  const result = parseMaskArrayBySchema(parsed, getCanonicalVertexCount(mesh), schema);
+  const mask = makeImportedMask(sourceNameFromFile(file, 'Imported Mask'));
+
+  mask.selectedByMesh.set(mesh, new Set(result.indices));
+  return { masks: [mask], activeMaskIndex: 0, skipped: result.skipped };
+}
+
+function updateMaskIoStatus() {
+  const status = simpleMaskStatus();
+  const el = document.getElementById('mesh-mask-io-status');
+  const npyButton = document.getElementById('btn-mesh-mask-save-npy');
+  const txtButton = document.getElementById('btn-mesh-mask-save-txt');
+
+  if (el) el.textContent = statusText(status.canUse, status.reason, status.ready);
+  [npyButton, txtButton].forEach(button => {
+    if (!button) return;
+    button.disabled = !status.canUse;
+    button.title = status.canUse ? 'Save the active mask as simple vertex data.' : status.reason;
+  });
+}
+
+function openMaskLoadDialog() {
+  openTaskDataDialog({
+    title: 'Load Mesh Mask Data',
+    html: `
+      <div class="task-data-dialog-section">
+        <div class="task-data-dialog-section-title">Source</div>
+        <label class="radio-label"><input type="radio" name="mesh-mask-load-mode" value="json" checked> JSON</label>
+        <label class="radio-label"><input type="radio" name="mesh-mask-load-mode" value="npz"> NPZ bundle</label>
+        <label class="radio-label"><input type="radio" name="mesh-mask-load-mode" value="array"> Array file</label>
+      </div>
+      <div class="task-data-dialog-section">
+        <div class="task-data-dialog-grid">
+          <label data-task-data-visible="json">JSON</label><input data-task-data-visible="json" id="mesh-mask-load-json-file" type="file" accept=".json,application/json" multiple>
+          <label data-task-data-visible="npz">NPZ</label><input data-task-data-visible="npz" id="mesh-mask-load-npz-file" type="file" accept=".npz,.zip,application/zip">
+          <label data-task-data-visible="array">Array type</label>
+          <div data-task-data-visible="array">
+            <label class="radio-label"><input type="radio" name="mesh-mask-load-array-kind" value="npy" checked> NPY</label>
+            <label class="radio-label"><input type="radio" name="mesh-mask-load-array-kind" value="text"> Text</label>
+          </div>
+          <label data-task-data-visible="array">Array</label><input data-task-data-visible="array" id="mesh-mask-load-array-file" type="file" accept=".npy,.txt,.csv,.tsv">
+          <label data-task-data-visible="array">Array schema</label>
+          <div data-task-data-visible="array">
+            <label class="radio-label"><input type="radio" name="mesh-mask-load-array-schema" value="auto" checked> Auto</label>
+            <label class="radio-label"><input type="radio" name="mesh-mask-load-array-schema" value="dense"> Dense boolean</label>
+            <label class="radio-label"><input type="radio" name="mesh-mask-load-array-schema" value="indices"> Vertex indices</label>
+          </div>
+        </div>
+      </div>
+      <div class="task-data-dialog-actions">
+        <button type="button" class="btn btn-export" data-mesh-mask-load-apply>Load</button>
+      </div>
+    `,
+    onMount(root, { close, setMessage }) {
+      bindDialogModeVisibility(root, 'mesh-mask-load-mode');
+      root.querySelector('[data-mesh-mask-load-apply]')?.addEventListener('click', async () => {
+        try {
+          const mode = checkedDialogValue(root, 'mesh-mask-load-mode');
+          if (mode === 'json') {
+            await importMaskFiles(root.querySelector('#mesh-mask-load-json-file')?.files);
+          } else if (mode === 'npz') {
+            await importMaskFiles([dialogFile(root, '#mesh-mask-load-npz-file')]);
+          } else {
+            const arrayFile = dialogFile(root, '#mesh-mask-load-array-file');
+            assertArrayFileKind(arrayFile, checkedDialogValue(root, 'mesh-mask-load-array-kind') || 'npy');
+            const result = await parseSimpleMaskFile(
+              arrayFile,
+              checkedDialogValue(root, 'mesh-mask-load-array-schema') || 'auto'
+            );
+            commit('import mesh mask', () => {
+              masks.push(...result.masks);
+              activeMaskIndex = masks.length - result.masks.length;
+              nextMaskId = Math.max(1, Math.max(0, ...masks.map(mask => mask.id)) + 1);
+            }, { renderMasks: true });
+            if (result.skipped > 0) {
+              alert(`Imported mask. Skipped ${result.skipped} invalid entr${result.skipped === 1 ? 'y' : 'ies'}.`);
+            }
+          }
+          close();
+        } catch (error) {
+          console.error('Failed to load mesh mask data:', error);
+          setMessage(error?.message || 'Failed to load mesh mask data.', 'error');
+        }
+      });
+    },
+  });
+}
+
+function openMaskSaveDialog() {
+  openTaskDataDialog({
+    title: 'Save Mesh Mask Data',
+    html: `
+      <div class="task-data-dialog-section">
+        <div class="task-data-dialog-section-title">Destination</div>
+        <label class="radio-label"><input type="radio" name="mesh-mask-save-mode" value="json" checked> JSON</label>
+        <label class="radio-label"><input type="radio" name="mesh-mask-save-mode" value="npz"> NPZ bundle</label>
+        <label class="radio-label"><input type="radio" name="mesh-mask-save-mode" value="array"> Array file</label>
+      </div>
+      <div class="task-data-dialog-section">
+        <div class="task-data-dialog-grid">
+          <label data-task-data-visible="array">Array schema</label>
+          <div data-task-data-visible="array">
+            <label class="radio-label"><input type="radio" name="mesh-mask-save-array-schema" value="dense" checked> Dense boolean</label>
+            <label class="radio-label"><input type="radio" name="mesh-mask-save-array-schema" value="indices"> Vertex indices</label>
+          </div>
+          <label data-task-data-visible="array">Array file type</label>
+          <div data-task-data-visible="array">
+            <label class="radio-label"><input type="radio" name="mesh-mask-save-array-kind" value="npy" checked> NPY</label>
+            <label class="radio-label"><input type="radio" name="mesh-mask-save-array-kind" value="txt"> Text</label>
+          </div>
+        </div>
+      </div>
+      <div class="task-data-dialog-actions">
+        <button type="button" class="btn btn-export" data-mesh-mask-save-apply>Save</button>
+      </div>
+    `,
+    onMount(root, { close, setMessage }) {
+      bindDialogModeVisibility(root, 'mesh-mask-save-mode');
+      root.querySelector('[data-mesh-mask-save-apply]')?.addEventListener('click', () => {
+        try {
+          const mode = checkedDialogValue(root, 'mesh-mask-save-mode');
+          if (mode === 'json') exportJSON();
+          else if (mode === 'npz') exportArrayBundle('npz');
+          else {
+            exportMaskArray({
+              schema: checkedDialogValue(root, 'mesh-mask-save-array-schema') || 'dense',
+              kind: checkedDialogValue(root, 'mesh-mask-save-array-kind') || 'npy',
+            });
+          }
+          close();
+        } catch (error) {
+          console.error('Failed to save mesh mask data:', error);
+          setMessage(error?.message || 'Failed to save mesh mask data.', 'error');
+        }
+      });
+    },
+  });
+}
+
 
 async function parseMaskBundleFile(file) {
   const entries = await readArrayBundle(file);
@@ -1150,17 +1365,29 @@ async function importMaskFiles(fileList) {
   const files = Array.from(fileList || []).filter(Boolean);
   if (!files.length) return;
 
-  const jsonFiles = files.filter(file => !/\.(npz|zip)$/i.test(file.name || ''));
+  const simpleFiles = files.filter(isSimpleArrayFile);
+  const jsonFiles = files.filter(file => /\.(json)$/i.test(file.name || ''));
   const arrayFiles = files.filter(file => /\.(npz|zip)$/i.test(file.name || ''));
 
   if (jsonFiles.length) await importJSONFiles(jsonFiles);
-  if (!arrayFiles.length) return;
+  if (!simpleFiles.length && !arrayFiles.length) return;
 
   const importedMasks = [];
   const failures = [];
   let skipped = 0;
 
   makeImportedMask.nextId = Math.max(1, nextMaskId, Math.max(0, ...masks.map(mask => mask.id)) + 1);
+
+  for (const file of simpleFiles) {
+    try {
+      const result = await parseSimpleMaskFile(file);
+      importedMasks.push(...result.masks);
+      skipped += result.skipped;
+    } catch (error) {
+      console.error('Failed to import simple mesh mask:', file?.name, error);
+      failures.push(`${file?.name || 'mask file'}: ${error?.message || 'failed to import'}`);
+    }
+  }
 
   for (const file of arrayFiles) {
     try {
@@ -1178,7 +1405,8 @@ async function importMaskFiles(fileList) {
       masks.push(...importedMasks);
       nextMaskId = Math.max(nextMaskId, Math.max(0, ...masks.map(mask => mask.id)) + 1);
       activeMaskIndex = masks.length - importedMasks.length;
-    }, { updatePanel: true });
+    }, { renderMasks: true });
+    updateMaskIoStatus();
   }
 
   const messages = [];
@@ -1375,22 +1603,7 @@ function sourceNameFromFile(file, fallback = 'Imported Mask') {
   return name || fallback;
 }
 
-function readJSONFile(file) {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
 
-    reader.onload = () => {
-      try {
-        resolve(JSON.parse(String(reader.result || '')));
-      } catch (error) {
-        reject(error);
-      }
-    };
-
-    reader.onerror = () => reject(new Error(`Failed to read ${file?.name || 'JSON file'}.`));
-    reader.readAsText(file);
-  });
-}
 
 async function importJSONFiles(fileList) {
   const files = Array.from(fileList || []).filter(Boolean);
@@ -1404,7 +1617,7 @@ async function importJSONFiles(fileList) {
 
   for (const file of files) {
     try {
-      const payload = await readJSONFile(file);
+      const payload = await readJson(file);
       const result = parseMaskPayload(payload, sourceNameFromFile(file));
       importedMasks.push(...result.masks);
       skipped += result.skipped;
@@ -1749,22 +1962,13 @@ function renderPanel() {
 
     <div class="section-title section-title-with-help">
       <span>Save / Load</span>
-      <span class="section-help" tabindex="0" data-tip="Export saves the active mask only. Import can load one or more JSON masks and appends them to the list.">?</span>
-    </div>
-    <div class="material-row mesh-mask-io-row">
-      <label>Format</label>
-      <select id="mesh-mask-io-format">
-        <option value="npz">Numpy (NPZ)</option>
-        <option value="zip">Numpy (ZIP)</option>
-        <option value="json">JSON</option>
-      </select>
-      <span></span>
+      <span class="section-help" tabindex="0" data-tip="Load auto-detects JSON, NPZ/ZIP, and simple NPY/TXT files. Simple NPY is a dense boolean mask; simple TXT is selected vertex indices. Full save keeps mesh metadata.">?</span>
     </div>
     <div class="btn-row mesh-mask-io-row">
-      <button id="btn-mesh-mask-import" class="btn">Import</button>
-      <button id="btn-mesh-mask-export" class="btn btn-export">Export</button>
+      <button id="btn-mesh-mask-import" class="btn">Load</button>
+      <button id="btn-mesh-mask-export" class="btn btn-export">Save</button>
     </div>
-    <input id="mesh-mask-import-file" class="mesh-mask-file-input" type="file" accept=".json,.npz,.zip,application/json,application/zip" multiple>
+    <input id="mesh-mask-import-file" class="mesh-mask-file-input" type="file" accept=".json,.npz,.zip,.npy,.txt,.csv,.tsv,application/json,application/zip" multiple>
   `;
 
   const brushSlider = document.getElementById('mesh-mask-brush');
@@ -1778,14 +1982,15 @@ function renderPanel() {
     if (getSelectedCount() === 0 || window.confirm('Clear the active mask?')) clearMask();
   });
   document.getElementById('btn-mesh-mask-invert')?.addEventListener('click', invertMask);
-  document.getElementById('btn-mesh-mask-export')?.addEventListener('click', () => exportByFormat(document.getElementById('mesh-mask-io-format')?.value || 'json'));
+  document.getElementById('btn-mesh-mask-export')?.addEventListener('click', openMaskSaveDialog);
 
   const importInput = document.getElementById('mesh-mask-import-file');
-  document.getElementById('btn-mesh-mask-import')?.addEventListener('click', () => importInput?.click());
+  document.getElementById('btn-mesh-mask-import')?.addEventListener('click', openMaskLoadDialog);
   importInput?.addEventListener('change', () => importMaskFiles(importInput.files));
 
   renderMaskList();
   updatePanelStats();
+  updateMaskIoStatus();
 }
 
 function resetForNewFile() {

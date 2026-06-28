@@ -19,13 +19,37 @@ import {
 } from '../landmarks/landmarkVisuals.js';
 import { GEOMY_VERSION } from '../version.js';
 import { downloadBlob } from '../util.js';
-import { downloadNpy, parseBundleArrays, readArrayBundle } from '../io/numpyBundle.js';
+import { downloadArrayBundle, downloadNpy, jsonEntry, npyEntry, parseBundleArrays, readArrayBundle } from '../io/numpyBundle.js';
 import { loadCanonicalOBJFile } from '../io/objCanonicalLoader.js';
+import {
+  arrayByName,
+  arrayEntryByNames,
+  assertArrayFileKind,
+  arrayRows,
+  bindDialogModeVisibility,
+  checkedDialogValue,
+  denseMaskFromIndices,
+  dialogFile,
+  downloadNumericText,
+  downloadSimpleNpy,
+  fileKind,
+  isSimpleArrayFile,
+  openTaskDataDialog,
+  parseMaskArrayBySchema,
+  parseVertexIndexList,
+  readJson,
+  readSimpleArrayFile,
+  safeDataFilename,
+  statusText,
+  stripKnownExtension,
+  setDialogRadioOptionDisabled
+} from '../io/taskDataDaemon.js';
 import {
   BrushSphereIndicator,
   MeshComponentIndex,
   TemporaryVisualizationState,
   clamp,
+  canonicalTriangleVertexIndicesFromHit,
   collectHitVertexIndices,
   ensureColorAttribute,
   getCanonicalPositionAttribute,
@@ -725,6 +749,7 @@ function serializeLandmark(landmark) {
   return {
     id: landmark.id,
     local: landmark.local ? vectorPayload(landmark.local) : null,
+    binding: landmark.binding ? JSON.parse(JSON.stringify(landmark.binding)) : null,
   };
 }
 
@@ -743,7 +768,11 @@ function deserializeLandmark(data) {
   const local = vectorFromPayload(data.local);
   if (!local) return null;
 
-  return { id, local };
+  return {
+    id,
+    local,
+    binding: data.binding ? JSON.parse(JSON.stringify(data.binding)) : null,
+  };
 }
 
 function makeSnapshot() {
@@ -1596,6 +1625,30 @@ function getWorldLandmark(side, index) {
   return root.localToWorld(landmark.local.clone());
 }
 
+function simplexBindingFromHit(hit) {
+  const mesh = hit?.object;
+  const position = getCanonicalPositionAttribute(mesh);
+  const vertexIndices = canonicalTriangleVertexIndicesFromHit(hit);
+  if (!mesh?.isMesh || !position || !vertexIndices?.length) return null;
+
+  const local = vertexIndices.map(index => new THREE.Vector3().fromBufferAttribute(position, index));
+  const localPoint = hit.point.clone().applyMatrix4(new THREE.Matrix4().copy(mesh.matrixWorld).invert());
+  const bary = new THREE.Vector3();
+  new THREE.Triangle(local[0], local[1], local[2]).getBarycoord(localPoint, bary);
+
+  return {
+    snapMode: 'triangle',
+    meshUuid: mesh.uuid,
+    meshName: getMeshLabel(mesh),
+    vertexIndices,
+    barycentric: {
+      a: roundNumber(bary.x),
+      b: roundNumber(bary.y),
+      c: roundNumber(bary.z),
+    },
+  };
+}
+
 function completeLandmarkPairs({ validate = false } = {}) {
   if (!sourceObject || !targetObject) return [];
 
@@ -1677,7 +1730,7 @@ function setSelectedLandmark(side, index, { toggle = true } = {}) {
   renderLandmarkList();
 }
 
-function replaceLandmarkLocal(side, index, local) {
+function replaceLandmarkLocal(side, index, local, binding = null) {
   const root = getObjectForSide(side);
   const landmarks = getLandmarkList(side).slice();
   const previous = landmarks[index];
@@ -1687,6 +1740,7 @@ function replaceLandmarkLocal(side, index, local) {
   landmarks[index] = {
     id: previous.id,
     local: local.clone(),
+    binding: binding || previous.binding || null,
   };
 
   setLandmarkList(side, trimTrailingEmptyLandmarks(landmarks));
@@ -1698,7 +1752,7 @@ function updateLandmarkFromEvent(side, index, event) {
   const hitInfo = hitFromEvent(event, side);
   if (!hitInfo?.hit || !root || !getLandmarkList(side)[index]) return false;
 
-  return replaceLandmarkLocal(side, index, root.worldToLocal(hitInfo.hit.point.clone()));
+  return replaceLandmarkLocal(side, index, root.worldToLocal(hitInfo.hit.point.clone()), simplexBindingFromHit(hitInfo.hit));
 }
 
 function beginLandmarkDrag(event, side, index) {
@@ -1783,6 +1837,7 @@ function placeLandmarkFromEvent(side, event, index = null) {
     landmarks[nextIndex] = {
       id: nextLandmarkId++,
       local: root.worldToLocal(hitInfo.hit.point.clone()),
+      binding: simplexBindingFromHit(hitInfo.hit),
     };
     setLandmarkList(side, trimTrailingEmptyLandmarks(landmarks));
     selectedLandmarkSide = side;
@@ -2859,22 +2914,7 @@ function alignSource() {
 
 // ── Import / export ───────────────────────────────────────────────
 
-function readJSONFile(file) {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
 
-    reader.onload = () => {
-      try {
-        resolve(JSON.parse(String(reader.result || '')));
-      } catch (error) {
-        reject(error);
-      }
-    };
-
-    reader.onerror = () => reject(new Error(`Failed to read ${file?.name || 'JSON file'}.`));
-    reader.readAsText(file);
-  });
-}
 
 function parseMaskIndexList(value, vertexCount) {
   if (!Array.isArray(value)) return { selected: new Set(), skipped: 0, valid: false };
@@ -3058,22 +3098,151 @@ function exportMaskForSide(side) {
   );
 }
 
+function simpleSideMaskStatus(side) {
+  const sideMeshes = getMeshesForSide(side);
+  if (sideMeshes.length !== 1) {
+    return {
+      canUse: false,
+      reason: `Simple ${side} mask I/O needs exactly one ${side} mesh.`,
+    };
+  }
+
+  return {
+    canUse: true,
+    reason: '',
+    ready: `${sideLabel(side)} simple mask I/O accepts dense boolean arrays or selected vertex indices.`,
+  };parseMaskArrayBySchemaparseMaskArrayBySchema
+}
+
+function sideMaskSimpleData(side) {
+  const status = simpleSideMaskStatus(side);
+  if (!status.canUse) throw new Error(status.reason);
+
+  const mesh = getMeshesForSide(side)[0];
+  const vertexCount = getCanonicalVertexCount(mesh);
+  const selection = getSelection(mesh, side);
+  const selectedIndices = [];
+
+  for (let i = 0; i < vertexCount; i++) {
+    if (selection?.[i]) selectedIndices.push(i);
+  }
+
+  const { dense, selected } = denseMaskFromIndices(vertexCount, selectedIndices);
+  return { mesh, dense, selected };
+}
+
+function exportSideMaskArray(side, { kind = 'npy', schema = 'dense' } = {}) {
+  try {
+    const { dense, selected } = sideMaskSimpleData(side);
+    const stem = safeDataFilename(side === 'source' ? sourceFileName : targetFileName, side);
+
+    if (schema === 'indices') {
+      if (kind === 'txt') {
+        downloadNumericText(selected.map(index => [index]), `rigid-align-${side}-mask-${stem}-indices.txt`);
+      } else {
+        downloadSimpleNpy(new Int32Array(selected), [selected.length], 'int32', `rigid-align-${side}-mask-${stem}-indices.npy`);
+      }
+      return;
+    }
+
+    if (kind === 'txt') {
+      downloadNumericText(Array.from(dense, value => [value]), `rigid-align-${side}-mask-${stem}.txt`);
+    } else {
+      downloadSimpleNpy(dense, [dense.length], 'bool', `rigid-align-${side}-mask-${stem}.npy`);
+    }
+  } catch (error) {
+    alert(error?.message || `Simple ${side} mask export is not available.`);
+  }
+}
+
+
+async function parseSimpleMaskForSide(side, file, schema = 'auto') {
+  const status = simpleSideMaskStatus(side);
+  if (!status.canUse) throw new Error(status.reason);
+
+  const mesh = getMeshesForSide(side)[0];
+  const parsed = await readSimpleArrayFile(file);
+  const result = parseMaskArrayBySchema(parsed, getCanonicalVertexCount(mesh), schema);
+  return {
+    selectionByMesh: new Map([[mesh, new Set(result.indices)]]),
+    skipped: result.skipped,
+  };
+}
+
+
+async function parseMaskBundleForSide(side, file) {
+  const status = simpleSideMaskStatus(side);
+  if (!status.canUse) throw new Error(status.reason);
+
+  const entries = await readArrayBundle(file);
+  const arrays = parseBundleArrays(entries);
+  const mesh = getMeshesForSide(side)[0];
+  const vertexCount = getCanonicalVertexCount(mesh);
+  const dense = arrayEntryByNames(arrays, ['mesh_0/mask.npy', 'mask.npy']);
+  const indices = arrayEntryByNames(arrays, ['mesh_0/indices.npy', 'indices.npy', 'index.npy']);
+
+  if (!dense && !indices) throw new Error('Mask NPZ needs mask.npy or indices.npy.');
+
+  const result = dense
+    ? parseMaskArrayBySchema(dense, vertexCount, 'dense')
+    : parseMaskArrayBySchema(indices, vertexCount, 'indices');
+
+  return {
+    selectionByMesh: new Map([[mesh, new Set(result.indices)]]),
+    skipped: result.skipped,
+  };
+}
+
+function exportMaskBundleForSide(side) {
+  try {
+    const { dense, selected } = sideMaskSimpleData(side);
+    const stem = safeDataFilename(side === 'source' ? sourceFileName : targetFileName, side);
+
+    downloadArrayBundle([
+      jsonEntry('metadata.json', {
+        format: 'geomy-mesh-mask-numpy',
+        version: GEOMY_VERSION,
+        side,
+        arrays: {
+          'mesh_0/mask.npy': 'bool[V]',
+          'mesh_0/indices.npy': 'int32[K]',
+        },
+      }),
+      npyEntry('mesh_0/mask.npy', dense, [dense.length], 'bool'),
+      npyEntry('mesh_0/indices.npy', new Int32Array(selected), [selected.length], 'int32'),
+    ], `rigid-align-${side}-mask-${stem}.npz`);
+  } catch (error) {
+    alert(error?.message || `NPZ ${side} mask export is not available.`);
+  }
+}
+
 async function importMaskFileForSide(side, file) {
   if (!file) return;
 
   try {
-    const payload = await readJSONFile(file);
-    const result = parseMaskPayloadForSide(payload, side);
+    const kind = fileKind(file);
+    let result;
+
+    if (isSimpleArrayFile(file)) {
+      result = await parseSimpleMaskForSide(side, file);
+    } else if (kind === 'bundle') {
+      result = await parseMaskBundleForSide(side, file);
+    } else if (kind === 'json') {
+      result = parseMaskPayloadForSide(await readJson(file), side);
+    } else {
+      throw new Error('Choose a mask JSON, .npy, .txt/.csv/.tsv, .npz, or .zip file.');
+    }
 
     commit(`import ${side} alignment mask`, () => {
       applyMaskSelectionToSide(side, result.selectionByMesh);
     });
+    updateRigidIoStatus();
 
     if (result.skipped > 0) {
       alert(`Imported ${side} mask. Skipped ${result.skipped} invalid vertex entr${result.skipped === 1 ? 'y' : 'ies'}.`);
     }
   } catch (error) {
-    console.error(`Failed to import ${side} alignment mask:`, error);
+    console.error(`Failed to import ${side} mask:`, error);
     alert(error?.message || `Failed to import ${side} mask.`);
   } finally {
     const input = document.getElementById(`mesh-rigid-${side}-mask-file`);
@@ -3137,6 +3306,7 @@ function parseLandmarkPayloadForSide(payload, side) {
     landmarks.push({
       id,
       local: root.worldToLocal(world.clone()),
+      binding: entry?.snap ? JSON.parse(JSON.stringify(entry.snap)) : null,
     });
   });
 
@@ -3145,12 +3315,178 @@ function parseLandmarkPayloadForSide(payload, side) {
   return { landmarks, skipped, maxId };
 }
 
+function sideSingleMesh(side) {
+  const sideMeshes = getMeshesForSide(side);
+  if (sideMeshes.length !== 1) {
+    throw new Error(`Simple ${side} landmark arrays need exactly one ${side} mesh.`);
+  }
+  return sideMeshes[0];
+}
+
+function sideVertexWorldPosition(side, vertexIndex) {
+  const mesh = sideSingleMesh(side);
+  const position = getCanonicalPositionAttribute(mesh);
+  if (!position || vertexIndex < 0 || vertexIndex >= position.count) return null;
+  return new THREE.Vector3().fromBufferAttribute(position, vertexIndex).applyMatrix4(mesh.matrixWorld);
+}
+
+function rigidLandmarkFromWorld(side, world, id, binding = null) {
+  const root = getObjectForSide(side);
+  if (!root || !world) return null;
+  return {
+    id,
+    local: root.worldToLocal(world.clone()),
+    binding: binding ? JSON.parse(JSON.stringify(binding)) : null,
+  };
+}
+
+function parseVertexLandmarkArrayForSide(side, array) {
+  const mesh = sideSingleMesh(side);
+  const vertexCount = getCanonicalVertexCount(mesh);
+  const parsed = parseVertexIndexList(array, vertexCount, { unique: false, sort: false });
+  const landmarks = [];
+
+  parsed.indices.forEach((vertexIndex, index) => {
+    const world = sideVertexWorldPosition(side, vertexIndex);
+    const binding = {
+      type: 'vertex',
+      snapMode: 'vertex',
+      meshUuid: mesh.uuid,
+      meshName: getMeshLabel(mesh),
+      vertexIndex,
+    };
+    const landmark = rigidLandmarkFromWorld(side, world, nextLandmarkId + index, binding);
+    if (landmark) landmarks.push(landmark);
+  });
+
+  if (!landmarks.length) throw new Error('No valid vertex landmark indices were found.');
+  return { landmarks, skipped: parsed.skipped, maxId: nextLandmarkId + landmarks.length - 1 };
+}
+
+function parseSimplexLandmarkArraysForSide(side, verticesArray, baryArray) {
+  const mesh = sideSingleMesh(side);
+  const position = getCanonicalPositionAttribute(mesh);
+  if (!position) throw new Error(`The ${side} mesh has no vertex positions.`);
+
+  const vertexRows = verticesArray.rows || arrayRows(verticesArray.data, verticesArray.shape);
+  const baryRows = baryArray.rows || arrayRows(baryArray.data, baryArray.shape);
+  const count = Math.min(vertexRows.length, baryRows.length);
+  const landmarks = [];
+  let skipped = Math.abs(vertexRows.length - baryRows.length);
+
+  for (let i = 0; i < count; i++) {
+    const ids = vertexRows[i].slice(0, 3).map(Number);
+    const weights = baryRows[i].slice(0, 3).map(Number);
+    const validIds = ids.filter(index => Number.isInteger(index) && index >= 0 && index < position.count);
+    const n = validIds.length;
+    if (!n) {
+      skipped += 1;
+      continue;
+    }
+
+    const normalizedWeights = [0, 0, 0];
+    for (let k = 0; k < n; k++) normalizedWeights[k] = Number.isFinite(weights[k]) ? weights[k] : (k === 0 ? 1 : 0);
+
+    const world = new THREE.Vector3();
+    for (let k = 0; k < n; k++) {
+      const point = sideVertexWorldPosition(side, validIds[k]);
+      if (point) world.add(point.multiplyScalar(normalizedWeights[k]));
+    }
+
+    const type = n === 1 ? 'vertex' : (n === 2 ? 'edge' : 'triangle');
+    const binding = type === 'vertex'
+      ? { type, snapMode: type, meshUuid: mesh.uuid, meshName: getMeshLabel(mesh), vertexIndex: validIds[0] }
+      : {
+          type,
+          snapMode: type,
+          meshUuid: mesh.uuid,
+          meshName: getMeshLabel(mesh),
+          vertexIndices: validIds,
+          barycentric: type === 'edge'
+            ? { a: normalizedWeights[0], b: normalizedWeights[1] }
+            : { a: normalizedWeights[0], b: normalizedWeights[1], c: normalizedWeights[2] },
+          t: type === 'edge' ? normalizedWeights[1] : undefined,
+        };
+
+    const landmark = rigidLandmarkFromWorld(side, world, nextLandmarkId + landmarks.length, binding);
+    if (landmark) landmarks.push(landmark);
+  }
+
+  if (!landmarks.length) throw new Error('No valid simplex landmark rows were found.');
+  return { landmarks, skipped, maxId: nextLandmarkId + landmarks.length - 1 };
+}
+
+
+async function parseLandmarkBundleForSide(side, file) {
+  const entries = await readArrayBundle(file);
+  const arrays = parseBundleArrays(entries);
+  const simplex = arrayByName(arrays, 'simplex.npy');
+  const barycentric = arrayByName(arrays, 'barycentric.npy');
+  if (!simplex || !barycentric) throw new Error('Landmark NPZ needs simplex.npy and barycentric.npy.');
+  return parseSimplexLandmarkArraysForSide(side, simplex, barycentric);
+}
+
+function simpleLandmarkRowsFromArray(array) {
+  const rows = array.rows || [];
+
+  if (rows.length && rows[0].length >= 3) {
+    return rows.map(row => row.slice(0, 3));
+  }
+
+  const data = Array.from(array.data || []);
+  if (data.length % 3 !== 0) {
+    throw new Error('Simple landmark coordinate arrays must be N x 3, or a flat length divisible by 3.');
+  }
+
+  const out = [];
+  for (let i = 0; i < data.length; i += 3) out.push([data[i], data[i + 1], data[i + 2]]);
+  return out;
+}
+
+async function parseSimpleLandmarksForSide(side, file) {
+  const root = getObjectForSide(side);
+  if (!root) throw new Error(`Load a ${side} mesh before importing landmarks.`);
+
+  const rows = simpleLandmarkRowsFromArray(await readSimpleArrayFile(file));
+  const imported = [];
+  let skipped = 0;
+  let maxId = 0;
+
+  rows.forEach((row, index) => {
+    const xyz = row.map(Number);
+    if (xyz.length < 3 || xyz.some(value => !Number.isFinite(value))) {
+      skipped += 1;
+      return;
+    }
+
+    const id = nextLandmarkId + index;
+    maxId = Math.max(maxId, id);
+    imported.push({
+      id,
+      local: root.worldToLocal(new THREE.Vector3(xyz[0], xyz[1], xyz[2])),
+    });
+  });
+
+  if (!imported.length) throw new Error('No valid coordinate landmarks were found.');
+  return { landmarks: imported, skipped, maxId, sourceName: stripKnownExtension(file?.name, `${side} landmarks`) };
+}
+
 async function importLandmarksForSide(side, file) {
   if (!file) return;
 
   try {
-    const payload = await readJSONFile(file);
-    const result = parseLandmarkPayloadForSide(payload, side);
+    const kind = fileKind(file);
+    let result;
+
+    if (isSimpleArrayFile(file)) {
+      result = await parseSimpleLandmarksForSide(side, file);
+    } else if (kind === 'bundle') {
+      result = await parseLandmarkBundleForSide(side, file);
+    } else if (kind === 'json') {
+      result = parseLandmarkPayloadForSide(await readJson(file), side);
+    } else {
+      throw new Error('Choose a landmark JSON, .npy, .txt/.csv/.tsv, .npz, or .zip file.');
+    }
 
     commit(`import ${side} landmarks`, () => {
       setLandmarkList(side, result.landmarks);
@@ -3160,6 +3496,7 @@ async function importLandmarksForSide(side, file) {
       selectedLandmarkIndex = -1;
       rebuildLandmarkMarkers();
     });
+    updateRigidIoStatus();
 
     if (result.skipped > 0) {
       alert(`Imported ${result.landmarks.length} ${side} landmark(s). Skipped ${result.skipped} invalid entr${result.skipped === 1 ? 'y' : 'ies'}.`);
@@ -3176,21 +3513,30 @@ async function importLandmarksForSide(side, file) {
 function landmarkExportEntry(side, landmark, rowIndex, exportIndex) {
   const world = getWorldLandmark(side, rowIndex);
   const mesh = getMeshesForSide(side)[0] || null;
+  const binding = landmark.binding || null;
+  const snap = binding
+    ? {
+        ...JSON.parse(JSON.stringify(binding)),
+        type: binding.type || binding.snapMode || 'triangle',
+        meshUuid: binding.meshUuid ?? mesh?.uuid ?? null,
+        meshName: binding.meshName ?? (mesh ? getMeshLabel(mesh) : null),
+      }
+    : {
+        type: 'triangle',
+        meshUuid: mesh?.uuid ?? null,
+        meshName: mesh ? getMeshLabel(mesh) : null,
+        faceIndex: null,
+        vertexIndices: null,
+        barycentric: null,
+      };
 
   return {
     index: exportIndex,
     id: landmark.id,
     name: `${sideLabel(side)} Landmark ${exportIndex + 1}`,
-    snapMode: 'triangle',
+    snapMode: snap.type,
     worldPosition: vectorPayload(world),
-    snap: {
-      type: 'triangle',
-      meshUuid: mesh?.uuid ?? null,
-      meshName: mesh ? getMeshLabel(mesh) : null,
-      faceIndex: null,
-      vertexIndices: null,
-      barycentric: null,
-    },
+    snap,
   };
 }
 
@@ -3227,6 +3573,114 @@ function exportLandmarksForSide(side) {
   );
 }
 
+function simplexBindingRowsForSide(side) {
+  const landmarks = getLandmarkList(side);
+  const vertices = [];
+  const barycentric = [];
+  const counts = [];
+  const worldRows = [];
+
+  landmarks.forEach((landmark, rowIndex) => {
+    if (!landmark) return;
+    const binding = landmark.binding || {};
+    const type = binding.type || binding.snapMode;
+    const world = getWorldLandmark(side, rowIndex) || new THREE.Vector3();
+
+    if (type === 'vertex' && Number.isInteger(binding.vertexIndex)) {
+      vertices.push([binding.vertexIndex, -1, -1]);
+      barycentric.push([1, -1, -1]);
+      counts.push(1);
+    } else if (type === 'edge' && Array.isArray(binding.vertexIndices) && binding.vertexIndices.length >= 2) {
+      const t = Number.isFinite(Number(binding.t)) ? Number(binding.t) : Number(binding.barycentric?.b ?? 0);
+      vertices.push([Number(binding.vertexIndices[0]), Number(binding.vertexIndices[1]), -1]);
+      barycentric.push([1 - t, t, -1]);
+      counts.push(2);
+    } else if (type === 'triangle' && Array.isArray(binding.vertexIndices) && binding.vertexIndices.length >= 3) {
+      vertices.push([
+        Number(binding.vertexIndices[0]),
+        Number(binding.vertexIndices[1]),
+        Number(binding.vertexIndices[2]),
+      ]);
+      barycentric.push([
+        Number(binding.barycentric?.a ?? 0),
+        Number(binding.barycentric?.b ?? 0),
+        Number(binding.barycentric?.c ?? 0),
+      ]);
+      counts.push(3);
+    } else {
+      throw new Error(`${sideLabel(side)} landmark ${rowIndex + 1} has no vertex/simplex binding. Re-place it on the mesh or load it from simplex data before array export.`);
+    }
+
+    worldRows.push([roundNumber(world.x), roundNumber(world.y), roundNumber(world.z)]);
+  });
+
+  if (!vertices.length) throw new Error(`No ${side} landmarks to export.`);
+  return { vertices, barycentric, counts, worldRows };
+}
+
+function vertexLandmarkIndicesForSide(side) {
+  const { vertices, counts } = simplexBindingRowsForSide(side);
+  if (counts.some(count => count !== 1)) {
+    throw new Error('Vertex-index export is available only when every landmark is vertex-snapped.');
+  }
+  return vertices.map(row => row[0]);
+}
+
+function exportVertexLandmarksForSide(side, kind = 'npy') {
+  try {
+    const indices = vertexLandmarkIndicesForSide(side);
+    const stem = safeDataFilename(side === 'source' ? sourceFileName : targetFileName, side);
+
+    if (kind === 'txt') {
+      downloadNumericText(indices.map(index => [index]), `rigid-align-${side}-landmark-vertices-${stem}.txt`);
+      return;
+    }
+
+    downloadSimpleNpy(new Int32Array(indices), [indices.length], 'int32', `rigid-align-${side}-landmark-vertices-${stem}.npy`);
+  } catch (error) {
+    alert(error?.message || `Vertex ${side} landmark export is not available.`);
+  }
+}
+
+function exportSimplexLandmarksForSide(side, kind = 'npy') {
+  try {
+    const { vertices, barycentric } = simplexBindingRowsForSide(side);
+    const stem = safeDataFilename(side === 'source' ? sourceFileName : targetFileName, side);
+
+    if (kind === 'txt') {
+      downloadNumericText(vertices, `rigid-align-${side}-landmark-simplex-${stem}.txt`);
+      downloadNumericText(barycentric, `rigid-align-${side}-landmark-barycentric-${stem}.txt`);
+      return;
+    }
+
+    downloadSimpleNpy(new Int32Array(vertices.flat()), [vertices.length, 3], 'int32', `rigid-align-${side}-landmark-simplex-${stem}.npy`);
+    downloadSimpleNpy(new Float32Array(barycentric.flat()), [barycentric.length, 3], 'float32', `rigid-align-${side}-landmark-barycentric-${stem}.npy`);
+  } catch (error) {
+    alert(error?.message || `Simplex ${side} landmark export is not available.`);
+  }
+}
+
+function exportLandmarkBundleForSide(side) {
+  try {
+    const { vertices, barycentric, counts, worldRows } = simplexBindingRowsForSide(side);
+    const stem = safeDataFilename(side === 'source' ? sourceFileName : targetFileName, side);
+
+    downloadArrayBundle([
+      npyEntry('simplex.npy', new Int32Array(vertices.flat()), [vertices.length, 3], 'int32'),
+      npyEntry('barycentric.npy', new Float32Array(barycentric.flat()), [barycentric.length, 3], 'float32'),
+      npyEntry('simplex_vertex_count.npy', new Int32Array(counts), [counts.length], 'int32'),
+      npyEntry('world_xyz.npy', new Float32Array(worldRows.flat()), [worldRows.length, 3], 'float32'),
+      jsonEntry('metadata.json', {
+        format: 'geomy-landmarks-numpy',
+        version: GEOMY_VERSION,
+        side,
+      }),
+    ], `rigid-align-${side}-landmarks-${stem}.npz`);
+  } catch (error) {
+    alert(error?.message || `NPZ ${side} landmark export is not available.`);
+  }
+}
+
 
 function exportTransformNpy() {
   const matrix = sourceAssetToTargetAssetMatrix();
@@ -3240,9 +3694,51 @@ function exportTransformNpy() {
   );
 }
 
+function exportTransformTxt() {
+  const matrix = sourceAssetToTargetAssetMatrix();
+  if (!matrix) return alert('Load source and target meshes before exporting the transform.');
+
+  const values = matrix.toArray();
+  downloadNumericText([
+    values.slice(0, 4),
+    values.slice(4, 8),
+    values.slice(8, 12),
+    values.slice(12, 16),
+  ], 'rigid-align-source-to-target.txt');
+}
+
 function exportTransformByFormat(format) {
   if (format === 'npy') exportTransformNpy();
+  else if (format === 'txt') exportTransformTxt();
   else exportTransformJSON();
+}
+
+function openTransformSaveDialog() {
+  openTaskDataDialog({
+    title: 'Save Transform',
+    html: `
+      <div class="task-data-dialog-section">
+        <div class="task-data-dialog-section-title">Destination</div>
+        <label class="radio-label"><input type="radio" name="rigid-transform-save-mode" value="npy" checked> NPY</label>
+        <label class="radio-label"><input type="radio" name="rigid-transform-save-mode" value="txt"> Text</label>
+        <label class="radio-label"><input type="radio" name="rigid-transform-save-mode" value="json"> JSON</label>
+      </div>
+      <div class="task-data-dialog-actions">
+        <button type="button" class="btn btn-export" data-rigid-transform-save-apply>Save</button>
+      </div>
+    `,
+    onMount(root, { close, setMessage }) {
+      root.querySelector('[data-rigid-transform-save-apply]')?.addEventListener('click', () => {
+        try {
+          exportTransformByFormat(checkedDialogValue(root, 'rigid-transform-save-mode') || 'npy');
+          close();
+        } catch (error) {
+          console.error('Failed to save transform:', error);
+          setMessage(error?.message || 'Failed to save transform.', 'error');
+        }
+      });
+    },
+  });
 }
 
 function restoreOriginalMaterialsForExport(cloneRoot, originalRoot) {
@@ -3379,19 +3875,33 @@ async function importSessionFile(file) {
   if (!file) return;
 
   try {
-    const payload = await new Promise((resolve, reject) => {
-      const reader = new FileReader();
-      reader.onload = () => {
-        try { resolve(JSON.parse(String(reader.result || ''))); }
-        catch (error) { reject(error); }
-      };
-      reader.onerror = () => reject(new Error('Failed to read the rigid alignment session file.'));
-      reader.readAsText(file);
-    });
+    if (!sourceObject || !targetObject) {
+      throw new Error('Load source and target meshes before importing a rigid alignment session.');
+    }
+
+    const payload = await readJson(file);
+
+    if (payload.type && payload.type !== 'geomy.meshRigidAlign.session') {
+      throw new Error('This is not a rigid alignment session file.');
+    }
 
     const snapshot = payload.snapshot || payload;
+    const warnings = [];
+
+    if (payload.sourceFileName && sourceFileName && payload.sourceFileName !== sourceFileName) {
+      warnings.push(`source mesh differs: session has "${payload.sourceFileName}", loaded mesh is "${sourceFileName}"`);
+    }
+
+    if (payload.targetFileName && targetFileName && payload.targetFileName !== targetFileName) {
+      warnings.push(`target mesh differs: session has "${payload.targetFileName}", loaded mesh is "${targetFileName}"`);
+    }
+
     restoreSnapshot(snapshot);
     clearHistory();
+
+    if (warnings.length) {
+      alert(`Rigid alignment session imported, but check mesh compatibility:\n\n${warnings.join('\n')}`);
+    }
   } catch (error) {
     console.error('Failed to import rigid alignment session:', error);
     alert(error?.message || 'Failed to import rigid alignment session.');
@@ -3445,6 +3955,289 @@ function updateLandmarkBlendControls() {
 }
 
 // ── UI ────────────────────────────────────────────────────────────
+
+function updateRigidIoStatus() {
+  ['source', 'target'].forEach(side => {
+    const status = simpleSideMaskStatus(side);
+    const el = document.getElementById(`mesh-rigid-${side}-mask-io-status`);
+    const npyButton = document.getElementById(`mesh-rigid-${side}-mask-export-npy`);
+    const txtButton = document.getElementById(`mesh-rigid-${side}-mask-export-txt`);
+
+    if (el) el.textContent = statusText(status.canUse, status.reason, status.ready);
+    [npyButton, txtButton].forEach(button => {
+      if (!button) return;
+      button.disabled = !status.canUse;
+      button.title = status.canUse ? `Save ${side} alignment mask as simple vertex data.` : status.reason;
+    });
+  });
+}
+
+function openRigidMaskLoadDialog(side) {
+  openTaskDataDialog({
+    title: `Load ${sideLabel(side)} Mask`,
+    html: `
+      <div class="task-data-dialog-section">
+        <div class="task-data-dialog-section-title">Source</div>
+        <label class="radio-label"><input type="radio" name="rigid-mask-load-mode" value="json" checked> JSON</label>
+        <label class="radio-label"><input type="radio" name="rigid-mask-load-mode" value="npz"> NPZ bundle</label>
+        <label class="radio-label"><input type="radio" name="rigid-mask-load-mode" value="array"> Array file</label>
+      </div>
+      <div class="task-data-dialog-section">
+        <div class="task-data-dialog-grid">
+          <label data-task-data-visible="json">JSON</label><input data-task-data-visible="json" id="rigid-mask-load-json-file" type="file" accept=".json,application/json">
+          <label data-task-data-visible="npz">NPZ</label><input data-task-data-visible="npz" id="rigid-mask-load-npz-file" type="file" accept=".npz,.zip,application/zip">
+          <label data-task-data-visible="array">Array type</label>
+          <div data-task-data-visible="array">
+            <label class="radio-label"><input type="radio" name="rigid-mask-load-array-kind" value="npy" checked> NPY</label>
+            <label class="radio-label"><input type="radio" name="rigid-mask-load-array-kind" value="text"> Text</label>
+          </div>
+          <label data-task-data-visible="array">Array</label><input data-task-data-visible="array" id="rigid-mask-load-array-file" type="file" accept=".npy,.txt,.csv,.tsv">
+          <label data-task-data-visible="array">Array schema</label>
+          <div data-task-data-visible="array">
+            <label class="radio-label"><input type="radio" name="rigid-mask-load-array-schema" value="auto" checked> Auto</label>
+            <label class="radio-label"><input type="radio" name="rigid-mask-load-array-schema" value="dense"> Dense boolean</label>
+            <label class="radio-label"><input type="radio" name="rigid-mask-load-array-schema" value="indices"> Vertex indices</label>
+          </div>
+        </div>
+      </div>
+      <div class="task-data-dialog-actions">
+        <button type="button" class="btn btn-export" data-rigid-mask-load-apply>Load</button>
+      </div>
+    `,
+    onMount(root, { close, setMessage }) {
+      bindDialogModeVisibility(root, 'rigid-mask-load-mode');
+      root.querySelector('[data-rigid-mask-load-apply]')?.addEventListener('click', async () => {
+        try {
+          const mode = checkedDialogValue(root, 'rigid-mask-load-mode');
+          let result;
+          if (mode === 'json') {
+            result = parseMaskPayloadForSide(await readJson(dialogFile(root, '#rigid-mask-load-json-file')), side);
+          } else if (mode === 'npz') {
+            result = await parseMaskBundleForSide(side, dialogFile(root, '#rigid-mask-load-npz-file'));
+          } else {
+            const arrayFile = dialogFile(root, '#rigid-mask-load-array-file');
+            assertArrayFileKind(arrayFile, checkedDialogValue(root, 'rigid-mask-load-array-kind') || 'npy');
+            result = await parseSimpleMaskForSide(
+                side,
+                arrayFile,
+                checkedDialogValue(root, 'rigid-mask-load-array-schema') || 'auto'
+              );
+          }
+
+          commit(`import ${side} alignment mask`, () => {
+            applyMaskSelectionToSide(side, result.selectionByMesh);
+          });
+          updateRigidIoStatus();
+
+          if (result.skipped > 0) {
+            alert(`Imported ${side} mask. Skipped ${result.skipped} invalid vertex entr${result.skipped === 1 ? 'y' : 'ies'}.`);
+          }
+          close();
+        } catch (error) {
+          console.error(`Failed to load ${side} mask:`, error);
+          setMessage(error?.message || `Failed to load ${side} mask.`, 'error');
+        }
+      });
+    },
+  });
+}
+
+function openRigidMaskSaveDialog(side) {
+  openTaskDataDialog({
+    title: `Save ${sideLabel(side)} Mask`,
+    html: `
+      <div class="task-data-dialog-section">
+        <div class="task-data-dialog-section-title">Destination</div>
+        <label class="radio-label"><input type="radio" name="rigid-mask-save-mode" value="json" checked> JSON</label>
+        <label class="radio-label"><input type="radio" name="rigid-mask-save-mode" value="npz"> NPZ bundle</label>
+        <label class="radio-label"><input type="radio" name="rigid-mask-save-mode" value="array"> Array file</label>
+      </div>
+      <div class="task-data-dialog-section">
+        <div class="task-data-dialog-grid">
+          <label data-task-data-visible="array">Array schema</label>
+          <div data-task-data-visible="array">
+            <label class="radio-label"><input type="radio" name="rigid-mask-save-array-schema" value="dense" checked> Dense boolean</label>
+            <label class="radio-label"><input type="radio" name="rigid-mask-save-array-schema" value="indices"> Vertex indices</label>
+          </div>
+          <label data-task-data-visible="array">Array file type</label>
+          <div data-task-data-visible="array">
+            <label class="radio-label"><input type="radio" name="rigid-mask-save-array-kind" value="npy" checked> NPY</label>
+            <label class="radio-label"><input type="radio" name="rigid-mask-save-array-kind" value="txt"> Text</label>
+          </div>
+        </div>
+      </div>
+      <div class="task-data-dialog-actions">
+        <button type="button" class="btn btn-export" data-rigid-mask-save-apply>Save</button>
+      </div>
+    `,
+    onMount(root, { close, setMessage }) {
+      bindDialogModeVisibility(root, 'rigid-mask-save-mode');
+      root.querySelector('[data-rigid-mask-save-apply]')?.addEventListener('click', () => {
+        try {
+          const mode = checkedDialogValue(root, 'rigid-mask-save-mode');
+          if (mode === 'json') exportMaskForSide(side);
+          else if (mode === 'npz') exportMaskBundleForSide(side);
+          else {
+            exportSideMaskArray(side, {
+              schema: checkedDialogValue(root, 'rigid-mask-save-array-schema') || 'dense',
+              kind: checkedDialogValue(root, 'rigid-mask-save-array-kind') || 'npy',
+            });
+          }
+          close();
+        } catch (error) {
+          console.error(`Failed to save ${side} mask:`, error);
+          setMessage(error?.message || `Failed to save ${side} mask.`, 'error');
+        }
+      });
+    },
+  });
+}
+
+function openRigidLandmarksLoadDialog(side) {
+  openTaskDataDialog({
+    title: `Load ${sideLabel(side)} Landmarks`,
+    html: `
+      <div class="task-data-dialog-section">
+        <div class="task-data-dialog-section-title">Source</div>
+        <label class="radio-label"><input type="radio" name="rigid-landmarks-load-mode" value="json" checked> JSON</label>
+        <label class="radio-label"><input type="radio" name="rigid-landmarks-load-mode" value="npz"> NPZ bundle</label>
+        <label class="radio-label"><input type="radio" name="rigid-landmarks-load-mode" value="vertex"> Vertex indices</label>
+        <label class="radio-label"><input type="radio" name="rigid-landmarks-load-mode" value="mixed"> Simplex + barycentric arrays</label>
+      </div>
+      <div class="task-data-dialog-section">
+        <div class="task-data-dialog-grid">
+          <label data-task-data-visible="json">JSON</label><input data-task-data-visible="json" id="rigid-landmarks-load-json-file" type="file" accept=".json,application/json">
+          <label data-task-data-visible="npz">NPZ</label><input data-task-data-visible="npz" id="rigid-landmarks-load-npz-file" type="file" accept=".npz,.zip,application/zip">
+          <label data-task-data-visible="vertex mixed">Array type</label>
+          <div data-task-data-visible="vertex mixed">
+            <label class="radio-label"><input type="radio" name="rigid-landmarks-load-array-kind" value="npy" checked> NPY</label>
+            <label class="radio-label"><input type="radio" name="rigid-landmarks-load-array-kind" value="text"> Text</label>
+          </div>
+          <label data-task-data-visible="vertex">Vertex file</label><input data-task-data-visible="vertex" id="rigid-landmarks-load-vertex-file" type="file" accept=".npy,.txt,.csv,.tsv">
+          <label data-task-data-visible="mixed">Simplex (L, 3)</label><input data-task-data-visible="mixed" id="rigid-landmarks-load-simplex-file" type="file" accept=".npy,.txt,.csv,.tsv">
+          <label data-task-data-visible="mixed">Barycentric (L, 3)</label><input data-task-data-visible="mixed" id="rigid-landmarks-load-bary-file" type="file" accept=".npy,.txt,.csv,.tsv">
+        </div>
+      </div>
+      <div class="task-data-dialog-actions">
+        <button type="button" class="btn btn-export" data-rigid-landmarks-load-apply>Load</button>
+      </div>
+    `,
+    onMount(root, { close, setMessage }) {
+      bindDialogModeVisibility(root, 'rigid-landmarks-load-mode');
+
+      root.querySelector('[data-rigid-landmarks-load-apply]')?.addEventListener('click', async () => {
+        try {
+          const mode = checkedDialogValue(root, 'rigid-landmarks-load-mode');
+          const arrayKind = checkedDialogValue(root, 'rigid-landmarks-load-array-kind') || 'npy';
+          let result;
+
+          if (mode === 'json') {
+            result = parseLandmarkPayloadForSide(await readJson(dialogFile(root, '#rigid-landmarks-load-json-file')), side);
+          } else if (mode === 'npz') {
+            result = await parseLandmarkBundleForSide(side, dialogFile(root, '#rigid-landmarks-load-npz-file'));
+          } else if (mode === 'vertex') {
+            const file = dialogFile(root, '#rigid-landmarks-load-vertex-file');
+            assertArrayFileKind(file, arrayKind);
+            result = parseVertexLandmarkArrayForSide(side, await readSimpleArrayFile(file));
+          } else {
+            const simplexFile = dialogFile(root, '#rigid-landmarks-load-simplex-file');
+            const baryFile = dialogFile(root, '#rigid-landmarks-load-bary-file');
+            assertArrayFileKind(simplexFile, arrayKind);
+            assertArrayFileKind(baryFile, arrayKind);
+            result = parseSimplexLandmarkArraysForSide(
+              side,
+              await readSimpleArrayFile(simplexFile),
+              await readSimpleArrayFile(baryFile)
+            );
+          }
+
+          commit(`import ${side} landmarks`, () => {
+            setLandmarkList(side, result.landmarks);
+            nextLandmarkId = Math.max(nextLandmarkId, result.maxId + 1);
+            selectedLandmarkSide = null;
+            selectedLandmarkIndex = -1;
+            rebuildLandmarkMarkers();
+          });
+          updateRigidIoStatus();
+
+          if (result.skipped > 0) {
+            alert(`Imported ${result.landmarks.length} ${side} landmark(s). Skipped ${result.skipped} invalid entr${result.skipped === 1 ? 'y' : 'ies'}.`);
+          }
+          close();
+        } catch (error) {
+          console.error(`Failed to load ${side} landmarks:`, error);
+          setMessage(error?.message || `Failed to load ${side} landmarks.`, 'error');
+        }
+      });
+    },
+  });
+}
+
+function openRigidLandmarksSaveDialog(side) {
+  openTaskDataDialog({
+    title: `Save ${sideLabel(side)} Landmarks`,
+    html: `
+      <div class="task-data-dialog-section">
+        <div class="task-data-dialog-section-title">Destination</div>
+        <label class="radio-label"><input type="radio" name="rigid-landmarks-save-mode" value="json" checked> JSON</label>
+        <label class="radio-label"><input type="radio" name="rigid-landmarks-save-mode" value="npz"> NPZ bundle</label>
+        <label class="radio-label"><input type="radio" name="rigid-landmarks-save-mode" value="arrays"> Per-array files</label>
+      </div>
+      <div class="task-data-dialog-section">
+        <div class="task-data-dialog-grid">
+          <label data-task-data-visible="arrays">Array schema</label>
+          <div data-task-data-visible="arrays">
+            <label class="radio-label"><input type="radio" name="rigid-landmarks-save-schema" value="vertex" checked> Vertex indices only</label>
+            <label class="radio-label"><input type="radio" name="rigid-landmarks-save-schema" value="mixed"> Simplex (L, 3) + barycentric (L, 3)</label>
+          </div>
+          <label data-task-data-visible="arrays">Array file type</label>
+          <div data-task-data-visible="arrays">
+            <label class="radio-label"><input type="radio" name="rigid-landmarks-save-array-kind" value="npy" checked> NPY</label>
+            <label class="radio-label"><input type="radio" name="rigid-landmarks-save-array-kind" value="txt"> Text</label>
+          </div>
+        </div>
+      </div>
+      <div class="task-data-dialog-actions">
+        <button type="button" class="btn btn-export" data-rigid-landmarks-save-apply>Save</button>
+      </div>
+    `,
+    onMount(root, { close, setMessage }) {
+      bindDialogModeVisibility(root, 'rigid-landmarks-save-mode');
+
+      let vertexReason = '';
+      try {
+        vertexLandmarkIndicesForSide(side);
+      } catch (error) {
+        vertexReason = error?.message || 'Vertex-index export is available only when every landmark is vertex-snapped.';
+      }
+
+      setDialogRadioOptionDisabled(
+        root,
+        'rigid-landmarks-save-schema',
+        'vertex',
+        !!vertexReason,
+        vertexReason
+      );
+
+      root.querySelector('[data-rigid-landmarks-save-apply]')?.addEventListener('click', () => {
+        try {
+          const mode = checkedDialogValue(root, 'rigid-landmarks-save-mode');
+          if (mode === 'json') exportLandmarksForSide(side);
+          else if (mode === 'npz') exportLandmarkBundleForSide(side);
+          else if ((checkedDialogValue(root, 'rigid-landmarks-save-schema') || 'vertex') === 'vertex') {
+            exportVertexLandmarksForSide(side, checkedDialogValue(root, 'rigid-landmarks-save-array-kind') || 'npy');
+          } else {
+            exportSimplexLandmarksForSide(side, checkedDialogValue(root, 'rigid-landmarks-save-array-kind') || 'npy');
+          }
+          close();
+        } catch (error) {
+          console.error(`Failed to save ${side} landmarks:`, error);
+          setMessage(error?.message || `Failed to save ${side} landmarks.`, 'error');
+        }
+      });
+    },
+  });
+}
 
 function readyLandmarkCount() {
   return completeLandmarkPairs().length;
@@ -3560,6 +4353,7 @@ function updatePanelStats() {
   updateStackButtons();
   updateDisplayButtons();
   updateInteractionButtons();
+  updateRigidIoStatus();
 }
 
 function renderAlignmentResult() {
@@ -3639,13 +4433,15 @@ function renderPanel() {
       </div>
       <button class="btn btn-full" id="mesh-rigid-invert-active" style="margin-top:6px;">Invert active mesh region</button>
       <div class="mesh-rigid-compact-actions" style="margin-top:6px;">
-        <button class="btn btn-mini" id="mesh-rigid-source-mask">Import source mask</button>
-        <button class="btn btn-mini" id="mesh-rigid-target-mask">Import target mask</button>
-        <button class="btn btn-mini" id="mesh-rigid-source-mask-export">Export source mask</button>
-        <button class="btn btn-mini" id="mesh-rigid-target-mask-export">Export target mask</button>
+        <button class="btn btn-mini" id="mesh-rigid-source-mask">Load source mask</button>
+        <button class="btn btn-mini btn-export" id="mesh-rigid-source-mask-export">Save source mask</button>
       </div>
-      <input type="file" id="mesh-rigid-source-mask-file" class="mesh-rigid-file-input" accept="application/json,.json">
-      <input type="file" id="mesh-rigid-target-mask-file" class="mesh-rigid-file-input" accept="application/json,.json">
+      <div class="mesh-rigid-compact-actions" style="margin-top:6px;">
+        <button class="btn btn-mini" id="mesh-rigid-target-mask">Load target mask</button>
+        <button class="btn btn-mini btn-export" id="mesh-rigid-target-mask-export">Save target mask</button>
+      </div>
+      <input type="file" id="mesh-rigid-source-mask-file" class="mesh-rigid-file-input" accept=".json,.npy,.txt,.csv,.tsv,application/json">
+      <input type="file" id="mesh-rigid-target-mask-file" class="mesh-rigid-file-input" accept=".json,.npy,.txt,.csv,.tsv,application/json">
     </div>
 
     <div class="section-title">Stats</div>
@@ -3660,13 +4456,15 @@ function renderPanel() {
       <span class="section-help" tabindex="0" data-tip="Landmark mode: Alt+left/right adds/removes, Ctrl+left-drag moves nearest landmark, Shift+left selects, Shift+right swaps with selected, any modifier+wheel rescales markers. Disabled in Both view.">?</span>
     </div>
     <div class="mesh-rigid-compact-actions" style="margin-top:6px;">
-      <button class="btn btn-mini" id="mesh-rigid-source-landmarks-import">Import source LM</button>
-      <button class="btn btn-mini" id="mesh-rigid-target-landmarks-import">Import target LM</button>
-      <button class="btn btn-mini" id="mesh-rigid-source-landmarks-export">Export source LM</button>
-      <button class="btn btn-mini" id="mesh-rigid-target-landmarks-export">Export target LM</button>
+      <button class="btn btn-mini" id="mesh-rigid-source-landmarks-import">Load source LM</button>
+      <button class="btn btn-mini btn-export" id="mesh-rigid-source-landmarks-export">Save source LM</button>
     </div>
-    <input type="file" id="mesh-rigid-source-landmarks-file" class="mesh-rigid-file-input" accept="application/json,.json">
-    <input type="file" id="mesh-rigid-target-landmarks-file" class="mesh-rigid-file-input" accept="application/json,.json">
+    <div class="mesh-rigid-compact-actions" style="margin-top:6px;">
+      <button class="btn btn-mini" id="mesh-rigid-target-landmarks-import">Load target LM</button>
+      <button class="btn btn-mini btn-export" id="mesh-rigid-target-landmarks-export">Save target LM</button>
+    </div>
+    <input type="file" id="mesh-rigid-source-landmarks-file" class="mesh-rigid-file-input" accept=".json,.npy,.txt,.csv,.tsv,application/json">
+    <input type="file" id="mesh-rigid-target-landmarks-file" class="mesh-rigid-file-input" accept=".json,.npy,.txt,.csv,.tsv,application/json">
     <div id="mesh-rigid-landmark-list" class="mesh-rigid-landmark-list"></div>
 
     <div class="section-title section-title-with-help">
@@ -3708,13 +4506,8 @@ function renderPanel() {
       <button class="btn" id="mesh-rigid-reset-source">Reset Source</button>
       <button class="btn" id="mesh-rigid-reset-target">Reset Target</button>
     </div>
-    <div class="material-row" style="margin-top:6px;">
-      <label>Transform</label>
-      <select id="mesh-rigid-transform-format">
-        <option value="npy">Numpy (.npy)</option>
-        <option value="json">JSON</option>
-      </select>
-      <button class="btn btn-mini" id="mesh-rigid-export-transform">Export</button>
+    <div class="mesh-rigid-compact-actions" style="margin-top:6px;">
+      <button class="btn btn-mini btn-export" id="mesh-rigid-export-transform">Save Transform</button>
     </div>
     <div class="material-row" style="margin-top:6px;">
       <label>Source</label>
@@ -3781,17 +4574,17 @@ function bindPanelEvents() {
   });
 
   document.getElementById('mesh-rigid-invert-active')?.addEventListener('click', invertActiveSelection);
-  document.getElementById('mesh-rigid-source-mask')?.addEventListener('click', () => document.getElementById('mesh-rigid-source-mask-file')?.click());
-  document.getElementById('mesh-rigid-target-mask')?.addEventListener('click', () => document.getElementById('mesh-rigid-target-mask-file')?.click());
-  document.getElementById('mesh-rigid-source-mask-export')?.addEventListener('click', () => exportMaskForSide('source'));
-  document.getElementById('mesh-rigid-target-mask-export')?.addEventListener('click', () => exportMaskForSide('target'));
+  document.getElementById('mesh-rigid-source-mask')?.addEventListener('click', () => openRigidMaskLoadDialog('source'));
+  document.getElementById('mesh-rigid-target-mask')?.addEventListener('click', () => openRigidMaskLoadDialog('target'));
+  document.getElementById('mesh-rigid-source-mask-export')?.addEventListener('click', () => openRigidMaskSaveDialog('source'));
+  document.getElementById('mesh-rigid-target-mask-export')?.addEventListener('click', () => openRigidMaskSaveDialog('target'));
   document.getElementById('mesh-rigid-source-mask-file')?.addEventListener('change', event => importMaskFileForSide('source', event.target.files?.[0]));
   document.getElementById('mesh-rigid-target-mask-file')?.addEventListener('change', event => importMaskFileForSide('target', event.target.files?.[0]));
 
-  document.getElementById('mesh-rigid-source-landmarks-import')?.addEventListener('click', () => document.getElementById('mesh-rigid-source-landmarks-file')?.click());
-  document.getElementById('mesh-rigid-target-landmarks-import')?.addEventListener('click', () => document.getElementById('mesh-rigid-target-landmarks-file')?.click());
-  document.getElementById('mesh-rigid-source-landmarks-export')?.addEventListener('click', () => exportLandmarksForSide('source'));
-  document.getElementById('mesh-rigid-target-landmarks-export')?.addEventListener('click', () => exportLandmarksForSide('target'));
+  document.getElementById('mesh-rigid-source-landmarks-import')?.addEventListener('click', () => openRigidLandmarksLoadDialog('source'));
+  document.getElementById('mesh-rigid-target-landmarks-import')?.addEventListener('click', () => openRigidLandmarksLoadDialog('target'));
+  document.getElementById('mesh-rigid-source-landmarks-export')?.addEventListener('click', () => openRigidLandmarksSaveDialog('source'));
+  document.getElementById('mesh-rigid-target-landmarks-export')?.addEventListener('click', () => openRigidLandmarksSaveDialog('target'));
   document.getElementById('mesh-rigid-source-landmarks-file')?.addEventListener('change', event => importLandmarksForSide('source', event.target.files?.[0]));
   document.getElementById('mesh-rigid-target-landmarks-file')?.addEventListener('change', event => importLandmarksForSide('target', event.target.files?.[0]));
 
@@ -3811,11 +4604,12 @@ function bindPanelEvents() {
   document.getElementById('mesh-rigid-align')?.addEventListener('click', alignSource);
   document.getElementById('mesh-rigid-reset-source')?.addEventListener('click', resetSourceTransform);
   document.getElementById('mesh-rigid-reset-target')?.addEventListener('click', resetTargetTransform);
-  document.getElementById('mesh-rigid-export-transform')?.addEventListener('click', () => exportTransformByFormat(document.getElementById('mesh-rigid-transform-format')?.value || 'npy'));
+  document.getElementById('mesh-rigid-export-transform')?.addEventListener('click', openTransformSaveDialog);
   document.getElementById('mesh-rigid-export-session')?.addEventListener('click', exportSessionJSON);
   document.getElementById('mesh-rigid-export-source')?.addEventListener('click', () => exportTransformedSourceMesh(document.getElementById('mesh-rigid-source-format')?.value || 'glb'));
   document.getElementById('mesh-rigid-import-session')?.addEventListener('click', () => document.getElementById('mesh-rigid-import-file')?.click());
   document.getElementById('mesh-rigid-import-file')?.addEventListener('change', event => importSessionFile(event.target.files?.[0]));
+  updateRigidIoStatus();
   updateInteractionButtons();
 }
 
@@ -4099,5 +4893,3 @@ export const meshRigidAlignTask = {
     forceRigidOpacityControls();
   },
 };
-
-
