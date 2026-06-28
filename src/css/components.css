@@ -333,15 +333,16 @@ label.disabled input { cursor: not-allowed; }
   min-width: 0;
 }
 
-.task-data-file-picker input[type="file"] {
-  flex: 0 0 auto;
-  width: 118px;
-  max-width: 118px;
-  color: transparent;
+/* Author display:flex overrides the browser's default [hidden] rule,
+   so hidden file-picker wrappers need an explicit hide rule. */
+.task-data-file-picker[hidden] {
+  display: none !important;
 }
 
-.task-data-file-picker input[type="file"]::file-selector-button {
-  color: var(--text);
+.task-data-file-picker input[type="file"] {
+  flex: 0 0 190px;
+  width: 190px;
+  max-width: 190px;
 }
 
 .task-data-file-name {
