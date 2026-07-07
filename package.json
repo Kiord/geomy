@@ -12,6 +12,8 @@
     "vite": "^8.0.10"
   },
   "dependencies": {
+    "jszip": "^3.10.1",
+    "npyjs": "^1.1.0",
     "three": "^0.184.0",
     "three-mesh-bvh": "^0.9.7"
   }

@@ -95,7 +95,7 @@ export async function readSimpleArrayFile(file) {
   const kind = fileKind(file);
 
   if (kind === 'npy') {
-    const parsed = parseNpy(await file.arrayBuffer());
+    const parsed = await parseNpy(await file.arrayBuffer());
     return {
       ...parsed,
       rows: arrayRows(parsed.data, parsed.shape),

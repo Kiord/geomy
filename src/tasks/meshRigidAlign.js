@@ -3175,7 +3175,7 @@ async function parseMaskBundleForSide(side, file) {
   if (!status.canUse) throw new Error(status.reason);
 
   const entries = await readArrayBundle(file);
-  const arrays = parseBundleArrays(entries);
+  const arrays = await parseBundleArrays(entries);
   const mesh = getMeshesForSide(side)[0];
   const vertexCount = getCanonicalVertexCount(mesh);
   const dense = arrayEntryByNames(arrays, ['mesh_0/mask.npy', 'mask.npy']);
@@ -3419,7 +3419,7 @@ function parseSimplexLandmarkArraysForSide(side, verticesArray, baryArray) {
 
 async function parseLandmarkBundleForSide(side, file) {
   const entries = await readArrayBundle(file);
-  const arrays = parseBundleArrays(entries);
+  const arrays = await parseBundleArrays(entries);
   const simplex = arrayByName(arrays, 'simplex.npy');
   const barycentric = arrayByName(arrays, 'barycentric.npy');
   if (!simplex || !barycentric) throw new Error('Landmark NPZ needs simplex.npy and barycentric.npy.');

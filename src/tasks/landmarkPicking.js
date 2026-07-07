@@ -1369,7 +1369,7 @@ async function readLandmarkImportPayload(file) {
 
   if (lower.endsWith('.npz') || lower.endsWith('.zip')) {
     const entries = await readArrayBundle(file);
-    const arrays = parseBundleArrays(entries);
+    const arrays = await parseBundleArrays(entries);
     return landmarkPayloadFromArrays(arrays);
   }
 

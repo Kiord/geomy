@@ -1325,7 +1325,7 @@ function openMaskSaveDialog() {
 
 async function parseMaskBundleFile(file) {
   const entries = await readArrayBundle(file);
-  const arrays = parseBundleArrays(entries);
+  const arrays = await parseBundleArrays(entries);
   const meshes = getCurrentMeshes();
   if (!meshes.length) throw new Error('Load a mesh before importing masks.');
 

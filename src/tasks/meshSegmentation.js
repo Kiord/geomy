@@ -1493,7 +1493,7 @@ async function parseSegmentationBundle(file) {
   if (!currentMeshes.length) throw new Error('Load a mesh before importing a segmentation.');
 
   const entries = await readArrayBundle(file);
-  const arrays = parseBundleArrays(entries);
+  const arrays = await parseBundleArrays(entries);
   const colors = arrayEntryByNames(arrays, ['colors.npy']);
   const firstMasks = arrayEntryByNames(arrays, ['mesh_0/masks.npy', 'masks.npy', 'segmentation.npy']);
   if (!firstMasks) throw new Error('Segmentation bundle needs masks.npy or mesh_0/masks.npy.');
