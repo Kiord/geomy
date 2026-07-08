@@ -354,12 +354,14 @@ label.disabled input { cursor: not-allowed; }
   font-size: 0.72rem;
 }
 
-.radio-label.is-disabled {
+.radio-label.is-disabled,
+.checkbox-label.is-disabled {
   opacity: 0.45;
   cursor: not-allowed;
 }
 
-.radio-label.is-disabled input {
+.radio-label.is-disabled input,
+.checkbox-label.is-disabled input {
   cursor: not-allowed;
 }
 

@@ -43,6 +43,14 @@ import {
   geodesicBrushStatus,
   precomputeGeodesicBrush,
 } from './geodesicBrushLut.js';
+import {
+  expandWithSymmetry,
+  getSymmetryMapping,
+  readSymmetryMappingFile,
+  setMeshSymmetry,
+  symmetryPairs,
+  symmetryStatusText,
+} from '../io/vertexSymmetry.js';
 import '../css/meshMasking.css';
 import '../css/meshSegmentation.css';
 
@@ -58,6 +66,7 @@ const STACK_LIMIT = 100;
 let active = false;
 let brushRadius = DEFAULT_BRUSH_RADIUS;
 let useGeodesicBrush = false;
+let paintSymmetric = false;
 let geodesicBrushRequestId = 0;
 let regions = [];
 let activeRegionIndex = 0;
@@ -317,12 +326,15 @@ function applyRenderMode() {
 }
 
 function hitIndices(hit, mode) {
+  const mesh = hit?.object;
+  let indices;
   if (mode === 'brush' && useGeodesicBrush) {
     const geodesic = collectPrecomputedGeodesicBrushVertexIndices(hit, brushRadius);
-    if (geodesic !== null) return geodesic;
+    if (geodesic !== null) indices = geodesic;
   }
 
-  return collectHitVertices(hit, { mode, brushRadius, componentIndex, screenSpace: true });
+  if (!indices) indices = collectHitVertices(hit, { mode, brushRadius, componentIndex, screenSpace: true });
+  return expandWithSymmetry(mesh, indices, paintSymmetric);
 }
 function applyRegionToVertex(mesh, index, regionId) {
   const assignment = assignmentFor(mesh);
@@ -1102,6 +1114,139 @@ function updatePanelStats() {
   updateStackButtons();
   updateGeodesicBrushStatus();
   updateSegmentationIoStatus();
+  updateSegmentationSymmetryStatus();
+}
+
+function symmetryMeshStatus() {
+  const currentMeshes = meshes();
+  if (currentMeshes.length !== 1) {
+    return {
+      canUse: false,
+      mesh: null,
+      reason: 'Symmetry tools are available when exactly one mesh is loaded.',
+    };
+  }
+
+  const mesh = currentMeshes[0];
+  const mapping = getSymmetryMapping(mesh);
+  if (!mapping) {
+    return {
+      canUse: false,
+      mesh,
+      reason: 'Load a vertex symmetry mapping to enable symmetry tools.',
+    };
+  }
+
+  return { canUse: true, mesh, reason: '', mapping };
+}
+
+function updateSegmentationSymmetryStatus() {
+  const status = symmetryMeshStatus();
+  const statusEl = document.getElementById('mesh-seg-symmetry-status');
+  const loadInput = document.getElementById('mesh-seg-symmetry-file');
+  const paintCheck = document.getElementById('mesh-seg-paint-symmetric');
+  const buttons = document.querySelectorAll('[data-mesh-seg-symmetry-action]');
+
+  if (statusEl) {
+    statusEl.textContent = status.mesh ? symmetryStatusText(status.mesh) : status.reason;
+  }
+
+  if (loadInput) loadInput.disabled = meshes().length !== 1;
+
+  buttons.forEach(button => {
+    button.disabled = !status.canUse;
+    button.title = status.canUse ? button.dataset.readyTitle || '' : status.reason;
+  });
+
+  if (paintCheck) {
+    paintCheck.checked = paintSymmetric;
+    paintCheck.disabled = !status.canUse;
+    paintCheck.closest('label')?.classList.toggle('is-disabled', !status.canUse);
+    paintCheck.title = status.canUse ? 'Paint mapped symmetric vertices at the same time.' : status.reason;
+  }
+}
+
+function requireSymmetryMesh() {
+  const status = symmetryMeshStatus();
+  if (!status.canUse) throw new Error(status.reason);
+  return status.mesh;
+}
+
+async function loadSegmentationSymmetryFile(file) {
+  const currentMeshes = meshes();
+  if (currentMeshes.length !== 1) throw new Error('Load exactly one mesh before loading a symmetry mapping.');
+
+  const symmetry = await readSymmetryMappingFile(file, currentMeshes[0]);
+  setMeshSymmetry(currentMeshes[0], symmetry);
+  updateSegmentationSymmetryStatus();
+}
+
+function transformedSegmentationValues(mesh, action) {
+  const current = assignmentFor(mesh).slice();
+  const mapping = getSymmetryMapping(mesh);
+  const next = action === 'mirror' ? new Int32Array(current.length) : current.slice();
+
+  if (action === 'mirror') {
+    for (let i = 0; i < current.length; i++) next[mapping[i]] = current[i];
+    return next;
+  }
+
+  const pairs = symmetryPairs(mesh);
+  const copies = action === 'right-to-left' ? pairs.rightToLeft : pairs.leftToRight;
+  copies.forEach(({ source, target }) => {
+    next[target] = current[source];
+  });
+  return next;
+}
+
+function applySegmentationValues(mesh, values) {
+  const assignment = assignmentFor(mesh);
+  assignment.set(values.slice(0, assignment.length));
+}
+
+function previewSegmentationSymmetry(action) {
+  clearPreview();
+
+  let mesh;
+  try {
+    mesh = requireSymmetryMesh();
+  } catch {
+    return;
+  }
+
+  const current = assignmentFor(mesh);
+  const next = transformedSegmentationValues(mesh, action);
+  const color = colorAttributeFor(mesh);
+  if (!current || !color) return;
+
+  const changed = new Set();
+  const white = new THREE.Color('#ffffff');
+  for (let i = 0; i < next.length; i++) {
+    if (current[i] === next[i]) continue;
+    changed.add(i);
+    const previewColor = colorForRegionId(next[i]).lerp(white, 0.35);
+    setColor(color, i, previewColor);
+  }
+
+  if (changed.size) {
+    color.needsUpdate = true;
+    previewedVertices.set(mesh, changed);
+    cursor.previewCount = changed.size;
+  }
+}
+
+function applySegmentationSymmetry(action) {
+  let mesh;
+  try {
+    mesh = requireSymmetryMesh();
+  } catch (error) {
+    alert(error?.message || 'Symmetry mapping is not available.');
+    return;
+  }
+
+  commit(`segmentation symmetry ${action}`, () => {
+    applySegmentationValues(mesh, transformedSegmentationValues(mesh, action));
+  });
 }
 
 function escapeHtml(value) {
@@ -1747,6 +1892,22 @@ function renderPanel() {
     <progress id="mesh-seg-geodesic-progress" max="100" value="0" style="width:100%;display:none;"></progress>
     <div class="hint" id="mesh-seg-geodesic-status"></div>
 
+    <div class="section-title section-title-with-help">
+      <span>Symmetry</span>
+      <span class="section-help" tabindex="0" data-tip="Load a vertex permutation as NPY or text. The sides are inferred from a plane fitted through self-symmetric vertices; hover copy/mirror buttons to preview changed vertices, click to commit.">?</span>
+    </div>
+    <div class="mesh-mask-option-group mesh-symmetry-group">
+      <input id="mesh-seg-symmetry-file" class="mesh-mask-file-input" type="file" accept=".npy,.txt,.csv,.tsv">
+      <button id="btn-mesh-seg-load-symmetry" class="btn btn-mini btn-full">Load Mapping</button>
+      <label class="checkbox-label"><input type="checkbox" id="mesh-seg-paint-symmetric" ${paintSymmetric ? 'checked' : ''}> Paint symmetric vertices</label>
+      <div class="task-edit-compact">
+        <button class="btn btn-mini" data-mesh-seg-symmetry-action="left-to-right" data-ready-title="Copy one fitted-plane side to the other.">L -> R</button>
+        <button class="btn btn-mini" data-mesh-seg-symmetry-action="right-to-left" data-ready-title="Copy the opposite fitted-plane side back.">R -> L</button>
+        <button class="btn btn-mini" data-mesh-seg-symmetry-action="mirror" data-ready-title="Permute labels through the mapping.">Mirror</button>
+      </div>
+      <div class="hint" id="mesh-seg-symmetry-status"></div>
+    </div>
+
     <div class="section-title">Regions</div>
     <div class="btn-row mesh-mask-io-row">
       <button id="btn-mesh-seg-add" class="btn">＋ Add Region</button>
@@ -1779,6 +1940,33 @@ function renderPanel() {
   const geodesicBrush = document.getElementById('mesh-seg-geodesic-brush');
   geodesicBrush?.addEventListener('change', () => setUseGeodesicBrush(geodesicBrush.checked));
 
+  const symmetryFileInput = document.getElementById('mesh-seg-symmetry-file');
+  document.getElementById('btn-mesh-seg-load-symmetry')?.addEventListener('click', () => symmetryFileInput?.click());
+  symmetryFileInput?.addEventListener('change', async () => {
+    try {
+      await loadSegmentationSymmetryFile(symmetryFileInput.files?.[0]);
+    } catch (error) {
+      console.error('Failed to load segmentation symmetry mapping:', error);
+      alert(error?.message || 'Failed to load symmetry mapping.');
+    } finally {
+      symmetryFileInput.value = '';
+    }
+  });
+
+  document.getElementById('mesh-seg-paint-symmetric')?.addEventListener('change', event => {
+    paintSymmetric = !!event.target.checked;
+    updateSegmentationSymmetryStatus();
+  });
+
+  document.querySelectorAll('[data-mesh-seg-symmetry-action]').forEach(button => {
+    const action = button.dataset.meshSegSymmetryAction;
+    button.addEventListener('mouseenter', () => previewSegmentationSymmetry(action));
+    button.addEventListener('focus', () => previewSegmentationSymmetry(action));
+    button.addEventListener('mouseleave', clearPreview);
+    button.addEventListener('blur', clearPreview);
+    button.addEventListener('click', () => applySegmentationSymmetry(action));
+  });
+
   document.getElementById('btn-mesh-seg-add')?.addEventListener('click', addRegion);
   document.getElementById('btn-mesh-seg-clear-active')?.addEventListener('click', () => {
     if (regionVertexCount() === 0 || window.confirm('Clear the active region assignments?')) clearActiveRegion();
@@ -1806,6 +1994,7 @@ function resetForNewFile() {
   activeRegionIndex = 0;
   nextRegionId = 1;
   painting = null;
+  paintSymmetric = false;
   ensureRegion();
   clearHistory();
 }

@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { app } from '../app.js';
 import { getCanonicalPositionAttribute, getCanonicalData } from '../tasks/meshTaskUtils.js';
+import { getMeshSymmetry, symmetryPairs } from '../io/vertexSymmetry.js';
 
 const GEOMETRY_MARKER_RADIUS = 0.002;
 const DEFAULT_GEOMETRY_COLOR = '#ff8c00';
@@ -8,16 +9,23 @@ const DEFAULT_GEOMETRY_COLORS = Object.freeze({
   vertices: DEFAULT_GEOMETRY_COLOR,
   edges: DEFAULT_GEOMETRY_COLOR,
   faces: DEFAULT_GEOMETRY_COLOR,
+  symmetry: '#00bcd4',
+  symmetryLeft: '#ff3333',
+  symmetryRight: '#2f80ff',
+  symmetrySelf: '#ffffff',
+  symmetryPlane: '#ffffff',
 });
 
 let vertexGroup = null;
 let edgeGroup = null;
 let faceGroup = null;
+let symmetryGroup = null;
 
 const settings = {
   vertices: { show: false, color: DEFAULT_GEOMETRY_COLORS.vertices },
   edges: { show: false, color: DEFAULT_GEOMETRY_COLORS.edges },
   faces: { show: false, color: DEFAULT_GEOMETRY_COLORS.faces },
+  symmetry: { show: false, color: DEFAULT_GEOMETRY_COLORS.symmetry },
 };
 
 function isVisibleInCurrentHierarchy(object) {
@@ -78,6 +86,14 @@ function clearFaces() {
   faceGroup = null;
 }
 
+function clearSymmetry() {
+  if (!symmetryGroup) return;
+
+  disposeGroup(symmetryGroup);
+  symmetryGroup.removeFromParent();
+  symmetryGroup = null;
+}
+
 function setGroupMaterialsColor(group, color) {
   if (!group) return;
 
@@ -103,6 +119,17 @@ function makeMarkerMaterial(color) {
   return mat;
 }
 
+function makePlaneMaterial(color) {
+  return new THREE.MeshBasicMaterial({
+    color,
+    transparent: true,
+    opacity: 0.18,
+    depthTest: true,
+    depthWrite: false,
+    side: THREE.DoubleSide,
+  });
+}
+
 function makeLineMaterial(color) {
   const mat = new THREE.LineBasicMaterial({
     color,
@@ -112,6 +139,54 @@ function makeLineMaterial(color) {
 
   mat.depthFunc = THREE.LessEqualDepth;
   return mat;
+}
+
+function makeMarkerInstances(pos, localToWorld, indices, color, radiusScale = 1.8) {
+  if (!indices.length) return null;
+
+  const geometry = new THREE.SphereGeometry(1, 8, 6);
+  const material = makeMarkerMaterial(color);
+  const markers = new THREE.InstancedMesh(geometry, material, indices.length);
+  const dummy = new THREE.Object3D();
+
+  markers.renderOrder = 1002;
+
+  indices.forEach((index, i) => {
+    dummy.position.copy(new THREE.Vector3().fromBufferAttribute(pos, index).applyMatrix4(localToWorld));
+    dummy.scale.setScalar(GEOMETRY_MARKER_RADIUS * radiusScale);
+    dummy.updateMatrix();
+    markers.setMatrixAt(i, dummy.matrix);
+  });
+
+  markers.instanceMatrix.needsUpdate = true;
+  return markers;
+}
+
+function addSymmetryPlane(mesh, pos, symmetry, localToWorld) {
+  if (!symmetry.plane) return;
+
+  const box = new THREE.Box3();
+  for (let i = 0; i < pos.count; i++) {
+    box.expandByPoint(new THREE.Vector3().fromBufferAttribute(pos, i).applyMatrix4(localToWorld));
+  }
+
+  const size = box.getSize(new THREE.Vector3()).length();
+  if (!Number.isFinite(size) || size <= 0) return;
+
+  const localPoint = new THREE.Vector3(...symmetry.plane.point).applyMatrix4(localToWorld);
+  const localNormalEnd = new THREE.Vector3(
+    symmetry.plane.point[0] + symmetry.plane.normal[0],
+    symmetry.plane.point[1] + symmetry.plane.normal[1],
+    symmetry.plane.point[2] + symmetry.plane.normal[2]
+  ).applyMatrix4(localToWorld);
+  const worldNormal = localNormalEnd.sub(localPoint).normalize();
+
+  const geometry = new THREE.PlaneGeometry(size * 0.72, size * 0.72);
+  const plane = new THREE.Mesh(geometry, makePlaneMaterial(DEFAULT_GEOMETRY_COLORS.symmetryPlane));
+  plane.position.copy(localPoint);
+  plane.quaternion.setFromUnitVectors(new THREE.Vector3(0, 0, 1), worldNormal);
+  plane.renderOrder = 998;
+  symmetryGroup.add(plane);
 }
 
 function buildVertices() {
@@ -261,16 +336,96 @@ function buildFaces() {
   });
 }
 
+function hasVisibleSymmetry() {
+  let found = false;
+  app.currentObject?.traverse(mesh => {
+    if (mesh.isMesh && isVisibleInCurrentHierarchy(mesh) && getMeshSymmetry(mesh)) found = true;
+  });
+  return found;
+}
+
+function updateSymmetryControl() {
+  const symmetryCheck = document.getElementById('geo-symmetry');
+  if (!symmetryCheck) return;
+
+  const available = hasVisibleSymmetry();
+  symmetryCheck.disabled = !available;
+  symmetryCheck.closest('label')?.classList.toggle('is-disabled', !available);
+  symmetryCheck.title = available ? 'Show symmetry pairs and self-symmetric vertices.' : 'Load a vertex symmetry mapping in a task panel first.';
+
+  if (!available) {
+    symmetryCheck.checked = false;
+    settings.symmetry.show = false;
+    clearSymmetry();
+  }
+}
+
+function buildSymmetry() {
+  clearSymmetry();
+  updateSymmetryControl();
+
+  if (!settings.symmetry.show || !app.currentObject) return;
+
+  symmetryGroup = new THREE.Group();
+  symmetryGroup.name = 'geo-symmetry';
+  symmetryGroup.renderOrder = 1000;
+  app.scene.add(symmetryGroup);
+
+  app.currentObject.traverse(mesh => {
+    if (!mesh.isMesh || !isVisibleInCurrentHierarchy(mesh)) return;
+
+    const pos = getCanonicalPositionAttribute(mesh);
+    const symmetry = symmetryPairs(mesh);
+    if (!pos || (!symmetry.pairs.length && !symmetry.self.length)) return;
+
+    const localToWorld = mesh.matrixWorld.clone();
+    const linePoints = [];
+    const leftVertices = new Set();
+    const rightVertices = new Set();
+
+    symmetry.pairs.forEach(pair => {
+      const a = new THREE.Vector3().fromBufferAttribute(pos, pair.a).applyMatrix4(localToWorld);
+      const b = new THREE.Vector3().fromBufferAttribute(pos, pair.b).applyMatrix4(localToWorld);
+      linePoints.push(a.x, a.y, a.z, b.x, b.y, b.z);
+    });
+
+    symmetry.leftToRight.forEach(({ source, target }) => {
+      leftVertices.add(source);
+      rightVertices.add(target);
+    });
+
+    addSymmetryPlane(mesh, pos, symmetry, localToWorld);
+
+    if (linePoints.length) {
+      const lineGeometry = new THREE.BufferGeometry();
+      lineGeometry.setAttribute('position', new THREE.Float32BufferAttribute(linePoints, 3));
+      const lines = new THREE.LineSegments(lineGeometry, makeLineMaterial(settings.symmetry.color));
+      lines.renderOrder = 1000;
+      symmetryGroup.add(lines);
+    }
+
+    const leftMarkers = makeMarkerInstances(pos, localToWorld, Array.from(leftVertices), DEFAULT_GEOMETRY_COLORS.symmetryLeft, 1.7);
+    const rightMarkers = makeMarkerInstances(pos, localToWorld, Array.from(rightVertices), DEFAULT_GEOMETRY_COLORS.symmetryRight, 1.7);
+    const selfMarkers = makeMarkerInstances(pos, localToWorld, symmetry.self, DEFAULT_GEOMETRY_COLORS.symmetrySelf, 2.0);
+
+    if (leftMarkers) symmetryGroup.add(leftMarkers);
+    if (rightMarkers) symmetryGroup.add(rightMarkers);
+    if (selfMarkers) symmetryGroup.add(selfMarkers);
+  });
+}
+
 function rebuildAll() {
   buildVertices();
   buildEdges();
   buildFaces();
+  buildSymmetry();
 }
 
 function clearAll() {
   clearVertices();
   clearEdges();
   clearFaces();
+  clearSymmetry();
 }
 
 function applyGeometryColor(kind, color) {
@@ -284,6 +439,7 @@ function applyGeometryColor(kind, color) {
   if (kind === 'vertices') setGroupMaterialsColor(vertexGroup, next);
   if (kind === 'edges') setGroupMaterialsColor(edgeGroup, next);
   if (kind === 'faces') setGroupMaterialsColor(faceGroup, next);
+  if (kind === 'symmetry') setGroupMaterialsColor(symmetryGroup, next);
 }
 
 // ── Init ──
@@ -291,6 +447,7 @@ export function initGeometryInspection() {
   const vertCheck = document.getElementById('geo-vertices');
   const edgeCheck = document.getElementById('geo-edges');
   const faceCheck = document.getElementById('geo-faces');
+  const symmetryCheck = document.getElementById('geo-symmetry');
   const vertColorInput = document.getElementById('geo-vertices-color');
   const edgeColorInput = document.getElementById('geo-edges-color');
   const faceColorInput = document.getElementById('geo-faces-color');
@@ -322,6 +479,16 @@ export function initGeometryInspection() {
     scheduleRebuild();
   });
 
+  symmetryCheck?.addEventListener('change', () => {
+    settings.symmetry.show = symmetryCheck.checked;
+    scheduleRebuild();
+  });
+
+  window.addEventListener('geomy:symmetry-changed', () => {
+    updateSymmetryControl();
+    scheduleRebuild();
+  });
+
   return {
     onFileLoaded() {
       clearAll();
@@ -334,6 +501,7 @@ export function initGeometryInspection() {
       if (vertCheck) vertCheck.checked = false;
       if (edgeCheck) edgeCheck.checked = false;
       if (faceCheck) faceCheck.checked = false;
+      if (symmetryCheck) symmetryCheck.checked = false;
       if (vertColorInput) vertColorInput.value = DEFAULT_GEOMETRY_COLORS.vertices;
       if (edgeColorInput) edgeColorInput.value = DEFAULT_GEOMETRY_COLORS.edges;
       if (faceColorInput) faceColorInput.value = DEFAULT_GEOMETRY_COLORS.faces;
@@ -341,9 +509,12 @@ export function initGeometryInspection() {
       settings.vertices.show = false;
       settings.edges.show = false;
       settings.faces.show = false;
+      settings.symmetry.show = false;
       settings.vertices.color = DEFAULT_GEOMETRY_COLORS.vertices;
       settings.edges.color = DEFAULT_GEOMETRY_COLORS.edges;
       settings.faces.color = DEFAULT_GEOMETRY_COLORS.faces;
+      settings.symmetry.color = DEFAULT_GEOMETRY_COLORS.symmetry;
+      updateSymmetryControl();
     },
 
     // Kept as a no-op because main.js calls this every frame.

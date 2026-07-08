@@ -88,6 +88,15 @@
   margin-top: 6px;
 }
 
+.mesh-symmetry-group {
+  display: grid;
+  gap: 7px;
+}
+
+.mesh-symmetry-group .hint {
+  min-height: 1.2em;
+}
+
 .mesh-mask-list {
   max-height: 240px;
   overflow-y: auto;
