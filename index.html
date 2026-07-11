@@ -46,9 +46,21 @@
 
     <!-- TASK PANEL (LEFT) -->
     <div id="task-panel">
-      <div id="task-mesh-loader" style="display:grid;grid-template-columns:auto minmax(0,1fr);align-items:center;gap:8px;padding:8px;border:1px solid var(--border);border-radius:6px;background:var(--surface);">
-        <button type="button" class="btn" id="task-load-mesh-btn" style="padding:6px 10px;white-space:nowrap;">Load mesh</button>
-        <span id="task-loaded-mesh-name" style="min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--text-dim);font-size:0.75rem;">No mesh loaded</span>
+      <div id="task-mesh-loader" class="task-mesh-loader">
+        <div class="task-mesh-load-row">
+          <button type="button" class="btn" id="task-load-mesh-btn">Load mesh</button>
+          <span id="task-loaded-mesh-name"></span>
+        </div>
+        <div class="task-mesh-load-row" id="task-symmetry-row" hidden>
+          <button type="button" class="btn btn-mini" id="task-load-symmetry-btn" disabled>Load symmetry</button>
+          <span id="task-loaded-symmetry-name"></span>
+        </div>
+        <div class="task-mesh-load-row" id="task-vertex-update-row" hidden>
+          <button type="button" class="btn btn-mini" id="task-update-vertices-btn" disabled>Update vertices</button>
+          <span id="task-updated-vertices-name"></span>
+        </div>
+        <input type="file" id="task-symmetry-file-input" accept=".npy,.txt,.csv,.tsv">
+        <input type="file" id="task-vertex-position-file-input" accept=".npy,.txt,.obj,.stl,.ply,.glb,.gltf">
       </div>
       <div id="task-content">
         <!-- Filled dynamically by task module -->

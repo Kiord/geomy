@@ -291,7 +291,7 @@ export function openTaskDataDialog({ title, html, onMount }) {
     <div class="task-data-dialog" role="dialog" aria-modal="true" aria-label="${escapeAttr(title)}">
       <div class="task-data-dialog-header">
         <h3>${escapeHtml(title)}</h3>
-        <button type="button" class="btn btn-mini task-data-dialog-close" aria-label="Close">Close</button>
+        <button type="button" class="btn btn-mini btn-icon task-data-dialog-close" aria-label="Close" title="Close">&times;</button>
       </div>
       <div class="task-data-dialog-body">${html}</div>
       <div class="task-data-dialog-message" data-task-data-message></div>
@@ -325,6 +325,7 @@ export function openTaskDataDialog({ title, html, onMount }) {
   bindDialogFileNameLabels(backdrop);
 
   onMount?.(backdrop, { close, setMessage });
+  refreshDialogSections(backdrop);
 
   const first = backdrop.querySelector('button, input, select, textarea');
   first?.focus?.({ preventScroll: true });
@@ -360,6 +361,29 @@ export function setDialogRadioOptionDisabled(root, radioName, value, disabled, r
     const fallback = root.querySelector(`input[name="${radioName}"]:not(:disabled)`);
     if (fallback) fallback.checked = true;
   }
+}
+
+function isEffectivelyHidden(element) {
+  if (!element || element.hidden) return true;
+  if (element.classList?.contains('is-hidden')) return true;
+  return false;
+}
+
+function refreshDialogSections(root) {
+  root.querySelectorAll('.task-data-dialog-section').forEach(section => {
+    const visibleContent = Array.from(section.children).some(child => {
+      if (child.classList?.contains('task-data-dialog-section-title')) return false;
+      if (isEffectivelyHidden(child)) return false;
+
+      if (child.classList?.contains('task-data-dialog-grid')) {
+        return Array.from(child.children).some(grandChild => !isEffectivelyHidden(grandChild));
+      }
+
+      return true;
+    });
+
+    section.hidden = !visibleContent;
+  });
 }
 
 function bindDialogFileNameLabels(root) {
@@ -423,6 +447,8 @@ export function bindDialogModeVisibility(root, radioName) {
 
       element.hidden = !modes.includes(mode);
     });
+
+    refreshDialogSections(root);
   };
 
   root.querySelectorAll(`input[name="${radioName}"]`).forEach(input => {

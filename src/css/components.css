@@ -74,6 +74,66 @@ label.radio-label input {
   height: 15px;
   cursor: pointer;
 }
+
+input[type="checkbox"],
+input[type="radio"] {
+  accent-color: var(--accent);
+}
+
+[data-theme="dark"] input[type="checkbox"],
+[data-theme="dark"] input[type="radio"] {
+  color-scheme: dark;
+  background-color: var(--bg-soft);
+  color: var(--text);
+}
+
+input[type="text"],
+input[type="number"],
+input[type="search"],
+input[type="email"],
+input[type="url"],
+input[type="password"],
+textarea,
+select {
+  box-sizing: border-box;
+  background: var(--panel-bg);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 0;
+}
+
+input[type="text"]:focus,
+input[type="number"]:focus,
+input[type="search"]:focus,
+input[type="email"]:focus,
+input[type="url"]:focus,
+input[type="password"]:focus,
+textarea:focus,
+select:focus {
+  outline: none;
+  border-color: var(--accent);
+  background: var(--panel-bg-focus);
+}
+
+select option {
+  background: var(--bg);
+  color: var(--text);
+}
+
+[data-theme="dark"] input[type="text"],
+[data-theme="dark"] input[type="number"],
+[data-theme="dark"] input[type="search"],
+[data-theme="dark"] input[type="email"],
+[data-theme="dark"] input[type="url"],
+[data-theme="dark"] input[type="password"],
+[data-theme="dark"] textarea,
+[data-theme="dark"] select,
+[data-theme="dark"] select option {
+  color-scheme: dark;
+  background: #29231e;
+  color: var(--text);
+  border-color: var(--border);
+}
 label.disabled {
   color: var(--text-muted);
   cursor: not-allowed;
@@ -299,6 +359,10 @@ label.disabled input { cursor: not-allowed; }
   border: 1px solid var(--border);
   padding: 9px;
   background: var(--panel-bg);
+}
+
+.task-data-dialog-section[hidden] {
+  display: none !important;
 }
 
 .task-data-dialog-section-title {
@@ -547,8 +611,21 @@ input[type="file"] {
 }
 
 input[type="file"]::file-selector-button {
+  background: var(--panel-bg);
+  border: 1px solid var(--text);
   color: var(--text);
   font-family: var(--font-family);
+  cursor: pointer;
+}
+
+[data-theme="dark"] input[type="file"]::file-selector-button {
+  background: #29231e;
+  color: var(--text);
+  border-color: var(--border);
+}
+
+input[type="file"]::file-selector-button:hover {
+  background: var(--hover);
 }
 
 

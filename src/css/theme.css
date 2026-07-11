@@ -16,6 +16,8 @@
   --danger: #b5121b;
   --gold: #b08a1f;
   --gold-dim: rgba(176, 138, 31, 0.12);
+  --important-load-bg: color-mix(in srgb, var(--surface-strong) 88%, var(--accent) 12%);
+
 
   --link: #0039a6;
   --link-hover: #b5121b;

@@ -52,18 +52,15 @@ import {
 import {
   expandWithSymmetry,
   getSymmetryMapping,
-  readSymmetryMappingFile,
-  setMeshSymmetry,
   symmetryPairs,
-  symmetryStatusText,
 } from '../io/vertexSymmetry.js';
 import '../css/meshMasking.css';
 
 const TASK_RENDER_OVERRIDE = 'mesh-mask';
 const SELECTED_COLOR = new THREE.Color('#ff3333');
 const UNSELECTED_COLOR = new THREE.Color('#2f80ff');
-const PREVIEW_SELECT_COLOR = new THREE.Color('#ff9a9a');
-const PREVIEW_UNSELECT_COLOR = new THREE.Color('#80b3ff');
+const PREVIEW_SELECT_COLOR = new THREE.Color('#ffe45c');
+const PREVIEW_UNSELECT_COLOR = new THREE.Color('#ffffff');
 const DEFAULT_BRUSH_RADIUS = 28;
 const MIN_BRUSH_RADIUS = 2;
 const MAX_BRUSH_RADIUS = 220;
@@ -513,16 +510,11 @@ function symmetryMeshStatus() {
 
 function updateMaskSymmetryStatus() {
   const status = symmetryMeshStatus();
-  const statusEl = document.getElementById('mesh-mask-symmetry-status');
-  const loadInput = document.getElementById('mesh-mask-symmetry-file');
   const paintCheck = document.getElementById('mesh-mask-paint-symmetric');
   const buttons = document.querySelectorAll('[data-mesh-mask-symmetry-action]');
+  const section = document.getElementById('mesh-mask-symmetry-section');
 
-  if (statusEl) {
-    statusEl.textContent = status.mesh ? symmetryStatusText(status.mesh) : status.reason;
-  }
-
-  if (loadInput) loadInput.disabled = getCurrentMeshes().length !== 1;
+  if (section) section.hidden = !status.canUse;
 
   buttons.forEach(button => {
     button.disabled = !status.canUse;
@@ -541,15 +533,6 @@ function requireSymmetryMesh() {
   const status = symmetryMeshStatus();
   if (!status.canUse) throw new Error(status.reason);
   return status.mesh;
-}
-
-async function loadMaskSymmetryFile(file) {
-  const currentMeshes = getCurrentMeshes();
-  if (currentMeshes.length !== 1) throw new Error('Load exactly one mesh before loading a symmetry mapping.');
-
-  const symmetry = await readSymmetryMappingFile(file, currentMeshes[0]);
-  setMeshSymmetry(currentMeshes[0], symmetry);
-  updateMaskSymmetryStatus();
 }
 
 function maskValuesForMesh(mesh) {
@@ -587,6 +570,17 @@ function transformedMaskValues(mesh, action) {
   return next;
 }
 
+function symmetryAffectedVertices(mesh, action) {
+  if (action === 'mirror') {
+    const mapping = getSymmetryMapping(mesh);
+    return new Set(Array.from(mapping || [], Number));
+  }
+
+  const pairs = symmetryPairs(mesh);
+  const copies = action === 'right-to-left' ? pairs.rightToLeft : pairs.leftToRight;
+  return new Set(copies.map(({ target }) => target));
+}
+
 function previewMaskSymmetry(action) {
   clearPreview();
 
@@ -597,22 +591,22 @@ function previewMaskSymmetry(action) {
     return;
   }
 
-  const current = maskValuesForMesh(mesh);
   const next = transformedMaskValues(mesh, action);
+  const affected = symmetryAffectedVertices(mesh, action);
   const colorAttribute = ensureColorAttribute(mesh);
   if (!colorAttribute) return;
 
-  const changed = new Set();
-  for (let i = 0; i < next.length; i++) {
-    if (current[i] === next[i]) continue;
-    changed.add(i);
+  const previewed = new Set();
+  affected.forEach(i => {
+    if (!Number.isInteger(i) || i < 0 || i >= next.length) return;
+    previewed.add(i);
     setVertexColor(colorAttribute, i, next[i] ? PREVIEW_SELECT_COLOR : PREVIEW_UNSELECT_COLOR);
-  }
+  });
 
-  if (changed.size) {
+  if (previewed.size) {
     colorAttribute.needsUpdate = true;
-    previewedVertices.set(mesh, changed);
-    cursorState.previewCount = changed.size;
+    previewedVertices.set(mesh, previewed);
+    cursorState.previewCount = previewed.size;
   }
 }
 
@@ -2079,6 +2073,7 @@ function updateMaskListState() {
 
 function renderPanel() {
   ensureDefaultMask();
+  const symmetryStatus = symmetryMeshStatus();
 
   app.dom.taskContent.innerHTML = `
     <div class="task-heading">
@@ -2101,21 +2096,16 @@ function renderPanel() {
     <progress id="mesh-mask-geodesic-progress" max="100" value="0" style="width:100%;display:none;"></progress>
     <div class="hint" id="mesh-mask-geodesic-status"></div>
 
-    <div class="section-title section-title-with-help">
-      <span>Symmetry</span>
-      <span class="section-help" tabindex="0" data-tip="Load a vertex permutation as NPY or text. The sides are inferred from a plane fitted through self-symmetric vertices; hover copy/mirror buttons to preview changed vertices, click to commit.">?</span>
-    </div>
-    <div class="mesh-mask-option-group mesh-symmetry-group">
-      <input id="mesh-mask-symmetry-file" class="mesh-mask-file-input" type="file" accept=".npy,.txt,.csv,.tsv">
-      <button id="btn-mesh-mask-load-symmetry" class="btn btn-mini btn-full">Load Mapping</button>
+    ${symmetryStatus.canUse ? `
+    <div id="mesh-mask-symmetry-section">
+      <div class="section-title">Symmetry</div>
       <label class="checkbox-label"><input type="checkbox" id="mesh-mask-paint-symmetric" ${paintSymmetric ? 'checked' : ''}> Paint symmetric vertices</label>
-      <div class="task-edit-compact">
+      <div class="task-edit-compact mesh-symmetry-actions">
         <button class="btn btn-mini" data-mesh-mask-symmetry-action="left-to-right" data-ready-title="Copy one fitted-plane side to the other.">L -> R</button>
         <button class="btn btn-mini" data-mesh-mask-symmetry-action="right-to-left" data-ready-title="Copy the opposite fitted-plane side back.">R -> L</button>
         <button class="btn btn-mini" data-mesh-mask-symmetry-action="mirror" data-ready-title="Permute the mask through the mapping.">Mirror</button>
       </div>
-      <div class="hint" id="mesh-mask-symmetry-status"></div>
-    </div>
+    </div>` : ''}
 
     <div class="section-title">Masks</div>
     <div class="btn-row mesh-mask-io-row">
@@ -2148,28 +2138,20 @@ function renderPanel() {
   const geodesicBrush = document.getElementById('mesh-mask-geodesic-brush');
   geodesicBrush?.addEventListener('change', () => setUseGeodesicBrush(geodesicBrush.checked));
 
-  const symmetryFileInput = document.getElementById('mesh-mask-symmetry-file');
-  document.getElementById('btn-mesh-mask-load-symmetry')?.addEventListener('click', () => symmetryFileInput?.click());
-  symmetryFileInput?.addEventListener('change', async () => {
-    try {
-      await loadMaskSymmetryFile(symmetryFileInput.files?.[0]);
-    } catch (error) {
-      console.error('Failed to load mask symmetry mapping:', error);
-      alert(error?.message || 'Failed to load symmetry mapping.');
-    } finally {
-      symmetryFileInput.value = '';
-    }
-  });
-
   document.getElementById('mesh-mask-paint-symmetric')?.addEventListener('change', event => {
     paintSymmetric = !!event.target.checked;
     updateMaskSymmetryStatus();
   });
 
   document.querySelectorAll('[data-mesh-mask-symmetry-action]').forEach(button => {
-    const action = button.dataset.meshMaskSymmetryAction;
+    const action = button.getAttribute('data-mesh-mask-symmetry-action');
+    button.addEventListener('pointerenter', () => previewMaskSymmetry(action));
+    button.addEventListener('pointerover', () => previewMaskSymmetry(action));
+    button.addEventListener('mouseover', () => previewMaskSymmetry(action));
+    button.addEventListener('pointermove', () => previewMaskSymmetry(action));
     button.addEventListener('mouseenter', () => previewMaskSymmetry(action));
     button.addEventListener('focus', () => previewMaskSymmetry(action));
+    button.addEventListener('pointerleave', clearPreview);
     button.addEventListener('mouseleave', clearPreview);
     button.addEventListener('blur', clearPreview);
     button.addEventListener('click', () => applyMaskSymmetry(action));
@@ -2244,5 +2226,15 @@ export const meshMaskingTask = {
       applyMaskRenderMode();
       renderPanel();
     }
+  },
+
+  onSymmetryChanged() {
+    if (active) renderPanel();
+  },
+
+  onGeometryChanged() {
+    if (!active) return;
+    updateAllColors();
+    updatePanelStats();
   },
 };

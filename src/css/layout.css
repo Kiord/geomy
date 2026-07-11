@@ -136,6 +136,62 @@ body.panel-left-collapsed #task-panel {
   margin-top: -4px;
 }
 
+.task-mesh-loader {
+  display: grid;
+  gap: 5px;
+  padding: 8px;
+  border: 1px solid var(--border);
+  border-radius: 0;
+  background: var(--important-load-bg);
+}
+
+.task-mesh-load-row {
+  display: grid;
+  grid-template-columns: minmax(92px, 116px) minmax(0, 1fr);
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+}
+
+.task-mesh-load-row[hidden] {
+  display: none !important;
+}
+
+.task-mesh-load-row .btn {
+  width: 100%;
+  min-width: 0;
+  white-space: nowrap;
+}
+
+.task-mesh-load-row span {
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-dim);
+  font-size: 0.75rem;
+}
+
+#task-load-symmetry-btn[hidden],
+#task-update-vertices-btn[hidden] {
+  display: none !important;
+}
+
+.task-mesh-loader #task-load-mesh-btn {
+  padding: 6px 10px;
+}
+
+.task-mesh-loader input[type="file"] {
+  display: none;
+}
+
+@media (max-width: 760px) {
+  .task-mesh-load-row {
+    grid-template-columns: minmax(86px, 108px) minmax(0, 1fr);
+  }
+}
+
 /* Drop overlay */
 #drop-overlay {
   position: absolute;

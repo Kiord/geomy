@@ -61,6 +61,13 @@ import {
   setVertexColor,
   vectorPayload,
 } from './meshTaskUtils.js';
+import {
+  collectPrecomputedGeodesicBrushVertexIndices,
+  geodesicBrushMemoryEstimateBytes,
+  geodesicBrushStatus,
+  precomputeGeodesicBrush,
+  resetGeodesicBrushPrecompute,
+} from './geodesicBrushLut.js';
 import '../css/meshRigidAlign.css';
 
 const TASK_RENDER_OVERRIDE = 'mesh-rigid-align';
@@ -76,6 +83,7 @@ const MIN_LANDMARK_SCALE = 0.01;
 const MAX_LANDMARK_SCALE = 6.0;
 const DISPLAY_MODES = ['source', 'target', 'both'];
 const INTERACTION_MODES = ['paint', 'landmark'];
+const LANDMARK_SNAP_MODES = ['triangle', 'vertex', 'edge'];
 
 const TARGET_INCLUDED_COLOR = new THREE.Color('#58d68d');
 const TARGET_EXCLUDED_COLOR = new THREE.Color('#5f6975');
@@ -92,6 +100,8 @@ const loaders = {
 
 let active = false;
 let brushRadius = DEFAULT_BRUSH_RADIUS;
+let useGeodesicBrush = false;
+let geodesicBrushRequestId = 0;
 let interactionMode = 'paint';
 let displayMode = 'both';
 let painting = null;
@@ -138,6 +148,7 @@ let taskWireframe = false;
 let taskBackfaceCulling = false;
 let landmarkScale = 1.0;
 let labelScale = 1.0;
+let landmarkSnapMode = 'triangle';
 const sideDistanceBvhCache = {
   source: null,
   target: null,
@@ -300,6 +311,14 @@ function disposeMaterialOrArray(material) {
   getMaterialList(material).forEach(mat => mat?.dispose?.());
 }
 
+function formatBytes(bytes) {
+  const n = Number(bytes) || 0;
+  if (n < 1024) return `${Math.round(n)} B`;
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
+  if (n < 1024 * 1024 * 1024) return `${(n / (1024 * 1024)).toFixed(1)} MB`;
+  return `${(n / (1024 * 1024 * 1024)).toFixed(2)} GB`;
+}
+
 function clearDistanceFieldCache(side = null) {
   if (side === 'source' || side === 'target') {
     heatmapFieldCache[side] = null;
@@ -324,6 +343,74 @@ function clearSideDistanceBvh(side) {
 
   cached.geometry?.dispose?.();
   sideDistanceBvhCache[side] = null;
+}
+
+function meshesForObject(object) {
+  const out = [];
+  object?.traverse?.(child => {
+    if (child.isMesh && child.geometry?.attributes?.position) out.push(child);
+  });
+  return out;
+}
+
+function rigidPaintMeshes() {
+  return [...meshesForObject(sourceObject), ...meshesForObject(targetObject)];
+}
+
+function editablePaintMeshes() {
+  return meshesForObject(getObjectForSide(editableSideFromDisplay()));
+}
+
+function updateRigidGeodesicBrushStatus() {
+  const checkbox = document.getElementById('mesh-rigid-geodesic-brush');
+  const progress = document.getElementById('mesh-rigid-geodesic-progress');
+  const statusEl = document.getElementById('mesh-rigid-geodesic-status');
+  const meshes = rigidPaintMeshes();
+  const status = geodesicBrushStatus(meshes);
+
+  if (checkbox) {
+    checkbox.checked = useGeodesicBrush;
+    checkbox.disabled = !meshes.length || status.building;
+    checkbox.closest('label')?.classList.toggle('is-disabled', checkbox.disabled);
+  }
+
+  if (progress) {
+    progress.value = Math.round((status.progress || 0) * 100);
+    progress.style.display = status.building ? 'block' : 'none';
+  }
+
+  if (statusEl) statusEl.textContent = useGeodesicBrush ? status.label : '';
+}
+
+async function setUseRigidGeodesicBrush(enabled) {
+  useGeodesicBrush = !!enabled;
+  updateRigidGeodesicBrushStatus();
+
+  if (!useGeodesicBrush) {
+    updateCursorIndicator();
+    return;
+  }
+
+  const requestId = ++geodesicBrushRequestId;
+
+  try {
+    await precomputeGeodesicBrush(rigidPaintMeshes(), {
+      confirmLarge(totalVertices) {
+        const bytes = geodesicBrushMemoryEstimateBytes(totalVertices);
+        return window.confirm(`This rigid-align scene has ${totalVertices.toLocaleString()} vertices. Geodesic precompute may take a while and use about ${formatBytes(bytes)}. Continue?`);
+      },
+      onProgress() {
+        if (requestId === geodesicBrushRequestId) updateRigidGeodesicBrushStatus();
+      },
+    });
+  } catch (error) {
+    console.error('Failed to build rigid geodesic brush:', error);
+    alert(error?.message || 'Failed to build geodesic brush.');
+    useGeodesicBrush = false;
+  }
+
+  updateRigidGeodesicBrushStatus();
+  updateCursorIndicator();
 }
 
 function disposeObject3D(object, { disposeGeometry = true, disposeMaterial = true } = {}) {
@@ -785,6 +872,7 @@ function makeSnapshot() {
     selectedLandmarkIndex,
     landmarkScale,
     labelScale,
+    landmarkSnapMode,
     landmarkBlend: roundNumber(landmarkBlend),
     alignAllowScale,
     alignAllowRotation,
@@ -835,6 +923,7 @@ function restoreSnapshot(snapshot) {
   selectedLandmarkIndex = Number.isInteger(snapshot.selectedLandmarkIndex) ? snapshot.selectedLandmarkIndex : -1;
   landmarkScale = clamp(Number(snapshot.landmarkScale) || 1, MIN_LANDMARK_SCALE, MAX_LANDMARK_SCALE);
   labelScale = clamp(Number(snapshot.labelScale) || 1, MIN_LANDMARK_SCALE, MAX_LANDMARK_SCALE);
+  landmarkSnapMode = LANDMARK_SNAP_MODES.includes(snapshot.landmarkSnapMode) ? snapshot.landmarkSnapMode : 'triangle';
   displayMode = DISPLAY_MODES.includes(snapshot.displayMode) ? snapshot.displayMode : displayMode;
   allowMirroring = snapshot.allowMirroring !== false;
   distanceHeatmap = !!snapshot.distanceHeatmap;
@@ -1078,13 +1167,21 @@ function setInteractionMode(mode) {
     draggingLandmark = null;
   }
 
+  if (active) {
+    renderPanel();
+    updateCursorIndicator();
+    return;
+  }
+
   updateInteractionButtons();
   updateCursorIndicator();
 }
 
 function updateInteractionButtons() {
   document.querySelectorAll('[data-mesh-rigid-mode]').forEach(button => {
-    button.classList.toggle('active', button.dataset.meshRigidMode === interactionMode);
+    const selected = button.dataset.meshRigidMode === interactionMode;
+    button.classList.toggle('active', selected);
+    button.setAttribute('aria-pressed', String(selected));
   });
 }
 
@@ -1142,6 +1239,7 @@ function clearSide(side) {
   const object = getObjectForSide(side);
 
   if (object) {
+    resetGeodesicBrushPrecompute(meshesForObject(object));
     object.removeFromParent();
     disposeObject3D(object, { disposeGeometry: true, disposeMaterial: true });
   }
@@ -1277,12 +1375,15 @@ function paintHit(hitInfo, mode, included) {
   const side = hitInfo?.side;
   if (!hit?.object?.isMesh || !side) return false;
 
-  const indices = collectHitVertexIndices(hit, {
-    mode,
-    brushRadius,
-    componentIndex: getComponentIndex(side),
-    screenSpace: true,
-  });
+  const geodesicReady = mode === 'brush' && useGeodesicBrush && geodesicBrushStatus([hit.object]).ready;
+  const indices = geodesicReady
+    ? collectPrecomputedGeodesicBrushVertexIndices(hit, brushRadius)
+    : collectHitVertexIndices(hit, {
+        mode,
+        brushRadius,
+        componentIndex: getComponentIndex(side),
+        screenSpace: true,
+      });
 
   return setSelectionForIndices(hit.object, side, indices, included);
 }
@@ -1508,6 +1609,21 @@ function updateCursorIndicator() {
 
   const hit = currentPaintBrushHit();
   const radiusPx = screenBrushRadius();
+  const geodesicReady = useGeodesicBrush && geodesicBrushStatus(editablePaintMeshes()).ready;
+
+  if (geodesicReady) {
+    hideBrushSphereIndicator();
+    indicator.innerHTML = '';
+    indicator.className = 'mesh-rigid-cursor-indicator';
+    indicator.style.left = '0';
+    indicator.style.top = '0';
+    indicator.style.width = `${radiusPx * 2}px`;
+    indicator.style.height = `${radiusPx * 2}px`;
+    indicator.style.transform = `translate(${cursorState.x}px, ${cursorState.y}px) translate(-50%, -50%)`;
+    setCanvasCursor('crosshair');
+    return;
+  }
+
   const radiusWorld = hit ? screenRadiusToWorldRadius(hit, radiusPx) : 0;
 
   indicator.innerHTML = '';
@@ -1625,26 +1741,120 @@ function getWorldLandmark(side, index) {
   return root.localToWorld(landmark.local.clone());
 }
 
-function simplexBindingFromHit(hit) {
+function closestPointOnSegment(point, a, b) {
+  const ab = b.clone().sub(a);
+  const denom = ab.lengthSq();
+  const t = denom > 1e-12 ? clamp(point.clone().sub(a).dot(ab) / denom, 0, 1) : 0;
+  return { point: a.clone().add(ab.multiplyScalar(t)), t };
+}
+
+function triangleDataFromHit(hit) {
   const mesh = hit?.object;
   const position = getCanonicalPositionAttribute(mesh);
   const vertexIndices = canonicalTriangleVertexIndicesFromHit(hit);
   if (!mesh?.isMesh || !position || !vertexIndices?.length) return null;
 
   const local = vertexIndices.map(index => new THREE.Vector3().fromBufferAttribute(position, index));
-  const localPoint = hit.point.clone().applyMatrix4(new THREE.Matrix4().copy(mesh.matrixWorld).invert());
-  const bary = new THREE.Vector3();
-  new THREE.Triangle(local[0], local[1], local[2]).getBarycoord(localPoint, bary);
+  const world = local.map(point => point.clone().applyMatrix4(mesh.matrixWorld));
 
   return {
-    snapMode: 'triangle',
-    meshUuid: mesh.uuid,
-    meshName: getMeshLabel(mesh),
+    mesh,
     vertexIndices,
-    barycentric: {
-      a: roundNumber(bary.x),
-      b: roundNumber(bary.y),
-      c: roundNumber(bary.z),
+    local,
+    world: {
+      a: world[0],
+      b: world[1],
+      c: world[2],
+    },
+  };
+}
+
+function baseLandmarkBinding(hit, snapMode) {
+  const mesh = hit?.object;
+  return {
+    snapMode,
+    meshUuid: mesh?.uuid ?? null,
+    meshName: getMeshLabel(mesh),
+  };
+}
+
+function landmarkSnapFromHit(hit, snapMode = landmarkSnapMode) {
+  const mode = LANDMARK_SNAP_MODES.includes(snapMode) ? snapMode : 'triangle';
+  const triangle = triangleDataFromHit(hit);
+  if (!triangle) {
+    return {
+      position: hit.point.clone(),
+      binding: baseLandmarkBinding(hit, mode),
+    };
+  }
+
+  if (mode === 'vertex') {
+    const candidates = [
+      { point: triangle.world.a, vertexIndex: triangle.vertexIndices[0] },
+      { point: triangle.world.b, vertexIndex: triangle.vertexIndices[1] },
+      { point: triangle.world.c, vertexIndex: triangle.vertexIndices[2] },
+    ];
+    let best = candidates[0];
+    let bestDistance = hit.point.distanceToSquared(best.point);
+    candidates.slice(1).forEach(candidate => {
+      const distance = hit.point.distanceToSquared(candidate.point);
+      if (distance < bestDistance) {
+        best = candidate;
+        bestDistance = distance;
+      }
+    });
+    return {
+      position: best.point.clone(),
+      binding: {
+        ...baseLandmarkBinding(hit, 'vertex'),
+        vertexIndex: best.vertexIndex,
+      },
+    };
+  }
+
+  if (mode === 'edge') {
+    const candidates = [
+      { ...closestPointOnSegment(hit.point, triangle.world.a, triangle.world.b), vertexIndices: [triangle.vertexIndices[0], triangle.vertexIndices[1]] },
+      { ...closestPointOnSegment(hit.point, triangle.world.b, triangle.world.c), vertexIndices: [triangle.vertexIndices[1], triangle.vertexIndices[2]] },
+      { ...closestPointOnSegment(hit.point, triangle.world.c, triangle.world.a), vertexIndices: [triangle.vertexIndices[2], triangle.vertexIndices[0]] },
+    ];
+    let best = candidates[0];
+    let bestDistance = hit.point.distanceToSquared(best.point);
+    candidates.slice(1).forEach(candidate => {
+      const distance = hit.point.distanceToSquared(candidate.point);
+      if (distance < bestDistance) {
+        best = candidate;
+        bestDistance = distance;
+      }
+    });
+    return {
+      position: best.point.clone(),
+      binding: {
+        ...baseLandmarkBinding(hit, 'edge'),
+        vertexIndices: best.vertexIndices,
+        t: roundNumber(best.t),
+        barycentric: {
+          a: roundNumber(1 - best.t),
+          b: roundNumber(best.t),
+        },
+      },
+    };
+  }
+
+  const localPoint = hit.point.clone().applyMatrix4(new THREE.Matrix4().copy(triangle.mesh.matrixWorld).invert());
+  const bary = new THREE.Vector3();
+  new THREE.Triangle(triangle.local[0], triangle.local[1], triangle.local[2]).getBarycoord(localPoint, bary);
+
+  return {
+    position: hit.point.clone(),
+    binding: {
+      ...baseLandmarkBinding(hit, 'triangle'),
+      vertexIndices: triangle.vertexIndices,
+      barycentric: {
+        a: roundNumber(bary.x),
+        b: roundNumber(bary.y),
+        c: roundNumber(bary.z),
+      },
     },
   };
 }
@@ -1751,8 +1961,9 @@ function updateLandmarkFromEvent(side, index, event) {
   const root = getObjectForSide(side);
   const hitInfo = hitFromEvent(event, side);
   if (!hitInfo?.hit || !root || !getLandmarkList(side)[index]) return false;
+  const snap = landmarkSnapFromHit(hitInfo.hit);
 
-  return replaceLandmarkLocal(side, index, root.worldToLocal(hitInfo.hit.point.clone()), simplexBindingFromHit(hitInfo.hit));
+  return replaceLandmarkLocal(side, index, root.worldToLocal(snap.position.clone()), snap.binding);
 }
 
 function beginLandmarkDrag(event, side, index) {
@@ -1833,11 +2044,12 @@ function placeLandmarkFromEvent(side, event, index = null) {
   const nextIndex = Number.isInteger(index) ? index : firstOpenLandmarkIndex(side);
 
   return commit(`place ${side} landmark`, () => {
+    const snap = landmarkSnapFromHit(hitInfo.hit);
     const landmarks = getLandmarkList(side).slice();
     landmarks[nextIndex] = {
       id: nextLandmarkId++,
-      local: root.worldToLocal(hitInfo.hit.point.clone()),
-      binding: simplexBindingFromHit(hitInfo.hit),
+      local: root.worldToLocal(snap.position.clone()),
+      binding: snap.binding,
     };
     setLandmarkList(side, trimTrailingEmptyLandmarks(landmarks));
     selectedLandmarkSide = side;
@@ -3784,6 +3996,26 @@ function exportTransformedSourceMesh(format = 'obj') {
   const base = `rigid-align-${safeFilename(name)}-transformed`;
   const exporterFormat = String(format || 'glb').toLowerCase();
 
+  if (exporterFormat === 'npy') {
+    const rows = [];
+    clone.updateMatrixWorld(true);
+    clone.traverse(child => {
+      if (!child.isMesh) return;
+      const position = getCanonicalPositionAttribute(child) || child.geometry?.attributes?.position;
+      if (!position) return;
+      child.updateMatrixWorld(true);
+      const world = new THREE.Vector3();
+      for (let i = 0; i < position.count; i++) {
+        world.fromBufferAttribute(position, i).applyMatrix4(child.matrixWorld);
+        rows.push(world.x, world.y, world.z);
+      }
+    });
+
+    if (!rows.length) return alert('The source mesh has no vertex positions to export.');
+    downloadNpy(new Float32Array(rows), [rows.length / 3, 3], 'float32', `${base}-vertices.npy`);
+    return;
+  }
+
   if (exporterFormat === 'glb' || exporterFormat === 'gltf') {
     const exporter = new GLTFExporter();
     exporter.parse(
@@ -4354,6 +4586,7 @@ function updatePanelStats() {
   updateDisplayButtons();
   updateInteractionButtons();
   updateRigidIoStatus();
+  updateRigidGeodesicBrushStatus();
 }
 
 function renderAlignmentResult() {
@@ -4387,23 +4620,26 @@ function renderAlignmentResult() {
 function renderPanel() {
   const content = app.dom.taskContent;
   if (!content) return;
+  const showPaintControls = interactionMode === 'paint';
+  const showLandmarkControls = interactionMode === 'landmark';
 
   content.innerHTML = `
-    <div class="task-heading">
-      <h3>Mesh Rigid Align</h3>
-      <span class="task-help" tabindex="0" data-tip="Load a source and target mesh. Use Space to cycle Source, Target, Both. Source/Target view is edit mode; Both view is inspect-only. Paint: Alt left/right includes/excludes, Shift handles components, Alt+wheel changes brush. Landmark: Alt left/right adds/removes, Ctrl-drag moves, Shift selects/swaps, any modifier+wheel scales.">?</span>
-    </div>
-
-    <div class="section-title">Meshes</div>
-    <div class="mesh-rigid-grid">
-      <button class="btn" id="mesh-rigid-source-btn">Load Source</button>
-      <button class="btn" id="mesh-rigid-target-btn">Load Target</button>
+    <div class="mesh-rigid-load-group">
+      <div class="mesh-rigid-load-row">
+        <button class="btn" id="mesh-rigid-source-btn">load source</button>
+        <span id="mesh-rigid-source-name">${sourceFileName || 'No source mesh'}</span>
+      </div>
+      <div class="mesh-rigid-load-row">
+        <button class="btn" id="mesh-rigid-target-btn">load target</button>
+        <span id="mesh-rigid-target-name">${targetFileName || 'No target mesh'}</span>
+      </div>
     </div>
     <input type="file" id="mesh-rigid-source-file" class="mesh-rigid-file-input" accept=".obj,.stl,.ply,.glb,.gltf">
     <input type="file" id="mesh-rigid-target-file" class="mesh-rigid-file-input" accept=".obj,.stl,.ply,.glb,.gltf">
-    <div class="mesh-rigid-option-group" style="margin-top:6px;">
-      <div class="mesh-rigid-stat"><span>Source</span><span id="mesh-rigid-source-name">${sourceFileName || 'No source mesh'}</span></div>
-      <div class="mesh-rigid-stat"><span>Target</span><span id="mesh-rigid-target-name">${targetFileName || 'No target mesh'}</span></div>
+
+    <div class="task-heading">
+      <h3>Mesh Rigid Align</h3>
+      <span class="task-help" tabindex="0" data-tip="Load a source and target mesh. Use Space to cycle Source, Target, Both. Source/Target view is edit mode; Both view is inspect-only. Mask: Alt left/right includes/excludes, Shift handles components, Alt+wheel changes brush. Landmark: Alt left/right adds/removes, Ctrl-drag moves, Shift selects/swaps, any modifier+wheel scales.">?</span>
     </div>
 
     <div class="section-title section-title-with-help">
@@ -4416,56 +4652,52 @@ function renderPanel() {
       <span>Interaction</span>
       <span class="section-help" tabindex="0" data-tip="Camera controls stay active unless you hold the task modifier for the selected mode.">?</span>
     </div>
-    <div class="btn-row mesh-rigid-mode-buttons">
-      <button class="btn" data-mesh-rigid-mode="paint">Paint</button>
-      <button class="btn" data-mesh-rigid-mode="landmark">Landmark</button>
-    </div>
+    <div class="mesh-rigid-option-group mesh-rigid-interaction-group">
+      <div class="btn-row mesh-rigid-mode-buttons">
+        <button class="btn" data-mesh-rigid-mode="paint" aria-pressed="${showPaintControls ? 'true' : 'false'}">Mask</button>
+        <button class="btn" data-mesh-rigid-mode="landmark" aria-pressed="${showLandmarkControls ? 'true' : 'false'}">Landmark</button>
+      </div>
 
-    <div class="section-title section-title-with-help">
-      <span>Paint region</span>
-      <span class="section-help" tabindex="0" data-tip="Paint mode: show Source or Target, then Alt+left/right-drag includes/excludes vertices. Shift+left/right applies include/exclude to the connected component. Alt+wheel resizes the brush. Disabled in Both view.">?</span>
-    </div>
-    <div class="mesh-rigid-option-group">
+    ${showPaintControls ? `
+      <div class="mesh-rigid-interaction-title">Mask region</div>
       <span class="mesh-rigid-slider-label">Brush</span>
       <div class="range-row">
         <input type="range" id="mesh-rigid-brush" min="${MIN_BRUSH_RADIUS}" max="${MAX_BRUSH_RADIUS}" step="1" value="${brushRadius}">
         <span class="range-val" id="mesh-rigid-brush-val">${Math.round(brushRadius)}px</span>
       </div>
-      <button class="btn btn-full" id="mesh-rigid-invert-active" style="margin-top:6px;">Invert active mesh region</button>
+      <label class="checkbox-label"><input type="checkbox" id="mesh-rigid-geodesic-brush" ${useGeodesicBrush ? 'checked' : ''}> Use geodesic brush</label>
+      <progress id="mesh-rigid-geodesic-progress" max="100" value="0" style="width:100%;display:none;"></progress>
+      <div class="hint" id="mesh-rigid-geodesic-status"></div>
       <div class="mesh-rigid-compact-actions" style="margin-top:6px;">
-        <button class="btn btn-mini" id="mesh-rigid-source-mask">Load source mask</button>
-        <button class="btn btn-mini btn-export" id="mesh-rigid-source-mask-export">Save source mask</button>
-      </div>
-      <div class="mesh-rigid-compact-actions" style="margin-top:6px;">
-        <button class="btn btn-mini" id="mesh-rigid-target-mask">Load target mask</button>
-        <button class="btn btn-mini btn-export" id="mesh-rigid-target-mask-export">Save target mask</button>
+        <button class="btn btn-mini" id="mesh-rigid-source-mask">load source</button>
+        <button class="btn btn-mini" id="mesh-rigid-target-mask">load target</button>
       </div>
       <input type="file" id="mesh-rigid-source-mask-file" class="mesh-rigid-file-input" accept=".json,.npy,.txt,.csv,.tsv,application/json">
       <input type="file" id="mesh-rigid-target-mask-file" class="mesh-rigid-file-input" accept=".json,.npy,.txt,.csv,.tsv,application/json">
-    </div>
+    ` : ''}
 
-    <div class="section-title">Stats</div>
-    <div class="mesh-rigid-option-group">
-      <div class="mesh-rigid-stat"><span>Target included</span><span id="mesh-rigid-target-count">—</span></div>
-      <div class="mesh-rigid-stat"><span>Source included</span><span id="mesh-rigid-source-count">—</span></div>
-      <div class="mesh-rigid-stat"><span>Landmarks</span><span id="mesh-rigid-landmark-count">0 ready / 0</span></div>
-    </div>
 
-    <div class="section-title section-title-with-help">
-      <span>Landmarks</span>
-      <span class="section-help" tabindex="0" data-tip="Landmark mode: Alt+left/right adds/removes, Ctrl+left-drag moves nearest landmark, Shift+left selects, Shift+right swaps with selected, any modifier+wheel rescales markers. Disabled in Both view.">?</span>
-    </div>
+    ${showLandmarkControls ? `
+      <div class="mesh-rigid-interaction-title">Landmarks</div>
+      <div class="landmark-option-group mesh-rigid-snap-options">
+        <label class="radio-label"><input type="radio" name="mesh-rigid-landmark-snap" value="triangle" ${landmarkSnapMode === 'triangle' ? 'checked' : ''}> Triangle <span class="keycap">T</span></label>
+        <label class="radio-label"><input type="radio" name="mesh-rigid-landmark-snap" value="vertex" ${landmarkSnapMode === 'vertex' ? 'checked' : ''}> Vertex <span class="keycap">V</span></label>
+        <label class="radio-label"><input type="radio" name="mesh-rigid-landmark-snap" value="edge" ${landmarkSnapMode === 'edge' ? 'checked' : ''}> Edge <span class="keycap">E</span></label>
+      </div>
+      <span class="mesh-rigid-slider-label">Landmark Scale</span>
+      <div class="range-row">
+        <input type="range" id="mesh-rigid-landmark-size" min="${MIN_LANDMARK_SCALE}" max="${MAX_LANDMARK_SCALE}" step="0.01" value="${landmarkScale}">
+        <span class="range-val" id="mesh-rigid-landmark-size-val">${landmarkScale.toFixed(2)}</span>
+      </div>
     <div class="mesh-rigid-compact-actions" style="margin-top:6px;">
-      <button class="btn btn-mini" id="mesh-rigid-source-landmarks-import">Load source LM</button>
-      <button class="btn btn-mini btn-export" id="mesh-rigid-source-landmarks-export">Save source LM</button>
-    </div>
-    <div class="mesh-rigid-compact-actions" style="margin-top:6px;">
-      <button class="btn btn-mini" id="mesh-rigid-target-landmarks-import">Load target LM</button>
-      <button class="btn btn-mini btn-export" id="mesh-rigid-target-landmarks-export">Save target LM</button>
+      <button class="btn btn-mini" id="mesh-rigid-source-landmarks-import">load source</button>
+      <button class="btn btn-mini" id="mesh-rigid-target-landmarks-import">load target</button>
     </div>
     <input type="file" id="mesh-rigid-source-landmarks-file" class="mesh-rigid-file-input" accept=".json,.npy,.txt,.csv,.tsv,application/json">
     <input type="file" id="mesh-rigid-target-landmarks-file" class="mesh-rigid-file-input" accept=".json,.npy,.txt,.csv,.tsv,application/json">
     <div id="mesh-rigid-landmark-list" class="mesh-rigid-landmark-list"></div>
+    ` : ''}
+    </div>
 
     <div class="section-title section-title-with-help">
       <span>Alignment</span>
@@ -4504,7 +4736,6 @@ function renderPanel() {
     </div>
     <div class="btn-row" style="margin-top:6px;">
       <button class="btn" id="mesh-rigid-reset-source">Reset Source</button>
-      <button class="btn" id="mesh-rigid-reset-target">Reset Target</button>
     </div>
     <div class="mesh-rigid-compact-actions" style="margin-top:6px;">
       <button class="btn btn-mini btn-export" id="mesh-rigid-export-transform">Save Transform</button>
@@ -4512,6 +4743,7 @@ function renderPanel() {
     <div class="material-row" style="margin-top:6px;">
       <label>Source</label>
       <select id="mesh-rigid-source-format">
+        <option value="npy">Vertex NPY</option>
         <option value="glb">GLB</option>
         <option value="gltf">GLTF</option>
         <option value="obj">OBJ</option>
@@ -4519,10 +4751,6 @@ function renderPanel() {
         <option value="stl">STL</option>
       </select>
       <button class="btn btn-mini" id="mesh-rigid-export-source">Export</button>
-    </div>
-    <div class="btn-row" style="margin-top:6px;">
-      <button class="btn" id="mesh-rigid-export-session">Save Session</button>
-      <button class="btn" id="mesh-rigid-import-session">Load Session</button>
     </div>
     <input type="file" id="mesh-rigid-import-file" class="mesh-rigid-file-input" accept="application/json,.json">
   `;
@@ -4567,23 +4795,45 @@ function bindPanelEvents() {
     refreshPreviewAtCursor();
   });
 
+  document.getElementById('mesh-rigid-geodesic-brush')?.addEventListener('change', event => {
+    setUseRigidGeodesicBrush(event.target.checked);
+  });
+
+  document.querySelectorAll('input[name="mesh-rigid-landmark-snap"]').forEach(input => {
+    input.addEventListener('change', () => {
+      if (input.checked && LANDMARK_SNAP_MODES.includes(input.value)) {
+        landmarkSnapMode = input.value;
+        focusViewportForKeys();
+      }
+    });
+  });
+
+  const landmarkSizeInput = document.getElementById('mesh-rigid-landmark-size');
+  const landmarkSizeVal = document.getElementById('mesh-rigid-landmark-size-val');
+  landmarkSizeInput?.addEventListener('input', () => {
+    const value = clamp(Number(landmarkSizeInput.value) || 1, MIN_LANDMARK_SCALE, MAX_LANDMARK_SCALE);
+    landmarkScale = value;
+    labelScale = value;
+    if (landmarkSizeVal) landmarkSizeVal.textContent = value.toFixed(2);
+    rebuildLandmarkMarkers();
+  });
+
   const outlierInput = document.getElementById('mesh-rigid-outliers');
   const outlierVal = document.getElementById('mesh-rigid-outliers-val');
   outlierInput?.addEventListener('input', () => {
     if (outlierVal) outlierVal.textContent = `${outlierInput.value}%`;
   });
 
-  document.getElementById('mesh-rigid-invert-active')?.addEventListener('click', invertActiveSelection);
   document.getElementById('mesh-rigid-source-mask')?.addEventListener('click', () => openRigidMaskLoadDialog('source'));
-  document.getElementById('mesh-rigid-target-mask')?.addEventListener('click', () => openRigidMaskLoadDialog('target'));
   document.getElementById('mesh-rigid-source-mask-export')?.addEventListener('click', () => openRigidMaskSaveDialog('source'));
+  document.getElementById('mesh-rigid-target-mask')?.addEventListener('click', () => openRigidMaskLoadDialog('target'));
   document.getElementById('mesh-rigid-target-mask-export')?.addEventListener('click', () => openRigidMaskSaveDialog('target'));
   document.getElementById('mesh-rigid-source-mask-file')?.addEventListener('change', event => importMaskFileForSide('source', event.target.files?.[0]));
   document.getElementById('mesh-rigid-target-mask-file')?.addEventListener('change', event => importMaskFileForSide('target', event.target.files?.[0]));
 
   document.getElementById('mesh-rigid-source-landmarks-import')?.addEventListener('click', () => openRigidLandmarksLoadDialog('source'));
-  document.getElementById('mesh-rigid-target-landmarks-import')?.addEventListener('click', () => openRigidLandmarksLoadDialog('target'));
   document.getElementById('mesh-rigid-source-landmarks-export')?.addEventListener('click', () => openRigidLandmarksSaveDialog('source'));
+  document.getElementById('mesh-rigid-target-landmarks-import')?.addEventListener('click', () => openRigidLandmarksLoadDialog('target'));
   document.getElementById('mesh-rigid-target-landmarks-export')?.addEventListener('click', () => openRigidLandmarksSaveDialog('target'));
   document.getElementById('mesh-rigid-source-landmarks-file')?.addEventListener('change', event => importLandmarksForSide('source', event.target.files?.[0]));
   document.getElementById('mesh-rigid-target-landmarks-file')?.addEventListener('change', event => importLandmarksForSide('target', event.target.files?.[0]));
@@ -4603,13 +4853,11 @@ function bindPanelEvents() {
 
   document.getElementById('mesh-rigid-align')?.addEventListener('click', alignSource);
   document.getElementById('mesh-rigid-reset-source')?.addEventListener('click', resetSourceTransform);
-  document.getElementById('mesh-rigid-reset-target')?.addEventListener('click', resetTargetTransform);
   document.getElementById('mesh-rigid-export-transform')?.addEventListener('click', openTransformSaveDialog);
-  document.getElementById('mesh-rigid-export-session')?.addEventListener('click', exportSessionJSON);
   document.getElementById('mesh-rigid-export-source')?.addEventListener('click', () => exportTransformedSourceMesh(document.getElementById('mesh-rigid-source-format')?.value || 'glb'));
-  document.getElementById('mesh-rigid-import-session')?.addEventListener('click', () => document.getElementById('mesh-rigid-import-file')?.click());
   document.getElementById('mesh-rigid-import-file')?.addEventListener('change', event => importSessionFile(event.target.files?.[0]));
   updateRigidIoStatus();
+  updateRigidGeodesicBrushStatus();
   updateInteractionButtons();
 }
 
@@ -4756,6 +5004,11 @@ function onKeyDown(event) {
   } else if (event.code === 'Space') {
     preventTaskEvent(event);
     cycleDisplayMode();
+  } else if (interactionMode === 'landmark' && ['t', 'v', 'e'].includes(key)) {
+    preventTaskEvent(event);
+    landmarkSnapMode = key === 'v' ? 'vertex' : (key === 'e' ? 'edge' : 'triangle');
+    renderPanel();
+    focusViewportForKeys();
   }
 }
 

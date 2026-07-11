@@ -46,10 +46,7 @@ import {
 import {
   expandWithSymmetry,
   getSymmetryMapping,
-  readSymmetryMappingFile,
-  setMeshSymmetry,
   symmetryPairs,
-  symmetryStatusText,
 } from '../io/vertexSymmetry.js';
 import '../css/meshMasking.css';
 import '../css/meshSegmentation.css';
@@ -58,6 +55,8 @@ const TASK_RENDER_OVERRIDE = 'mesh-segmentation';
 const NONE = 0;
 const NONE_COLOR = new THREE.Color('#788395');
 const CLEAR_PREVIEW_COLOR = new THREE.Color('#d8dee9');
+const SYMMETRY_PREVIEW_COLOR = new THREE.Color('#ffe45c');
+const SYMMETRY_CLEAR_PREVIEW_COLOR = new THREE.Color('#ffffff');
 const DEFAULT_BRUSH_RADIUS = 28;
 const MIN_BRUSH_RADIUS = 2;
 const MAX_BRUSH_RADIUS = 220;
@@ -1142,16 +1141,11 @@ function symmetryMeshStatus() {
 
 function updateSegmentationSymmetryStatus() {
   const status = symmetryMeshStatus();
-  const statusEl = document.getElementById('mesh-seg-symmetry-status');
-  const loadInput = document.getElementById('mesh-seg-symmetry-file');
   const paintCheck = document.getElementById('mesh-seg-paint-symmetric');
   const buttons = document.querySelectorAll('[data-mesh-seg-symmetry-action]');
+  const section = document.getElementById('mesh-seg-symmetry-section');
 
-  if (statusEl) {
-    statusEl.textContent = status.mesh ? symmetryStatusText(status.mesh) : status.reason;
-  }
-
-  if (loadInput) loadInput.disabled = meshes().length !== 1;
+  if (section) section.hidden = !status.canUse;
 
   buttons.forEach(button => {
     button.disabled = !status.canUse;
@@ -1170,15 +1164,6 @@ function requireSymmetryMesh() {
   const status = symmetryMeshStatus();
   if (!status.canUse) throw new Error(status.reason);
   return status.mesh;
-}
-
-async function loadSegmentationSymmetryFile(file) {
-  const currentMeshes = meshes();
-  if (currentMeshes.length !== 1) throw new Error('Load exactly one mesh before loading a symmetry mapping.');
-
-  const symmetry = await readSymmetryMappingFile(file, currentMeshes[0]);
-  setMeshSymmetry(currentMeshes[0], symmetry);
-  updateSegmentationSymmetryStatus();
 }
 
 function transformedSegmentationValues(mesh, action) {
@@ -1204,6 +1189,17 @@ function applySegmentationValues(mesh, values) {
   assignment.set(values.slice(0, assignment.length));
 }
 
+function symmetryAffectedVertices(mesh, action) {
+  if (action === 'mirror') {
+    const mapping = getSymmetryMapping(mesh);
+    return new Set(Array.from(mapping || [], Number));
+  }
+
+  const pairs = symmetryPairs(mesh);
+  const copies = action === 'right-to-left' ? pairs.rightToLeft : pairs.leftToRight;
+  return new Set(copies.map(({ target }) => target));
+}
+
 function previewSegmentationSymmetry(action) {
   clearPreview();
 
@@ -1216,22 +1212,21 @@ function previewSegmentationSymmetry(action) {
 
   const current = assignmentFor(mesh);
   const next = transformedSegmentationValues(mesh, action);
+  const affected = symmetryAffectedVertices(mesh, action);
   const color = colorAttributeFor(mesh);
   if (!current || !color) return;
 
-  const changed = new Set();
-  const white = new THREE.Color('#ffffff');
-  for (let i = 0; i < next.length; i++) {
-    if (current[i] === next[i]) continue;
-    changed.add(i);
-    const previewColor = colorForRegionId(next[i]).lerp(white, 0.35);
-    setColor(color, i, previewColor);
-  }
+  const previewed = new Set();
+  affected.forEach(i => {
+    if (!Number.isInteger(i) || i < 0 || i >= next.length) return;
+    previewed.add(i);
+    setColor(color, i, next[i] === NONE ? SYMMETRY_CLEAR_PREVIEW_COLOR : SYMMETRY_PREVIEW_COLOR);
+  });
 
-  if (changed.size) {
+  if (previewed.size) {
     color.needsUpdate = true;
-    previewedVertices.set(mesh, changed);
-    cursor.previewCount = changed.size;
+    previewedVertices.set(mesh, previewed);
+    cursor.previewCount = previewed.size;
   }
 }
 
@@ -1870,6 +1865,7 @@ async function importJSON(fileList) {
 
 function renderPanel() {
   ensureRegion();
+  const symmetryStatus = symmetryMeshStatus();
 
   app.dom.taskContent.innerHTML = `
     <div class="task-heading">
@@ -1892,21 +1888,16 @@ function renderPanel() {
     <progress id="mesh-seg-geodesic-progress" max="100" value="0" style="width:100%;display:none;"></progress>
     <div class="hint" id="mesh-seg-geodesic-status"></div>
 
-    <div class="section-title section-title-with-help">
-      <span>Symmetry</span>
-      <span class="section-help" tabindex="0" data-tip="Load a vertex permutation as NPY or text. The sides are inferred from a plane fitted through self-symmetric vertices; hover copy/mirror buttons to preview changed vertices, click to commit.">?</span>
-    </div>
-    <div class="mesh-mask-option-group mesh-symmetry-group">
-      <input id="mesh-seg-symmetry-file" class="mesh-mask-file-input" type="file" accept=".npy,.txt,.csv,.tsv">
-      <button id="btn-mesh-seg-load-symmetry" class="btn btn-mini btn-full">Load Mapping</button>
+    ${symmetryStatus.canUse ? `
+    <div id="mesh-seg-symmetry-section">
+      <div class="section-title">Symmetry</div>
       <label class="checkbox-label"><input type="checkbox" id="mesh-seg-paint-symmetric" ${paintSymmetric ? 'checked' : ''}> Paint symmetric vertices</label>
-      <div class="task-edit-compact">
+      <div class="task-edit-compact mesh-symmetry-actions">
         <button class="btn btn-mini" data-mesh-seg-symmetry-action="left-to-right" data-ready-title="Copy one fitted-plane side to the other.">L -> R</button>
         <button class="btn btn-mini" data-mesh-seg-symmetry-action="right-to-left" data-ready-title="Copy the opposite fitted-plane side back.">R -> L</button>
         <button class="btn btn-mini" data-mesh-seg-symmetry-action="mirror" data-ready-title="Permute labels through the mapping.">Mirror</button>
       </div>
-      <div class="hint" id="mesh-seg-symmetry-status"></div>
-    </div>
+    </div>` : ''}
 
     <div class="section-title">Regions</div>
     <div class="btn-row mesh-mask-io-row">
@@ -1940,28 +1931,20 @@ function renderPanel() {
   const geodesicBrush = document.getElementById('mesh-seg-geodesic-brush');
   geodesicBrush?.addEventListener('change', () => setUseGeodesicBrush(geodesicBrush.checked));
 
-  const symmetryFileInput = document.getElementById('mesh-seg-symmetry-file');
-  document.getElementById('btn-mesh-seg-load-symmetry')?.addEventListener('click', () => symmetryFileInput?.click());
-  symmetryFileInput?.addEventListener('change', async () => {
-    try {
-      await loadSegmentationSymmetryFile(symmetryFileInput.files?.[0]);
-    } catch (error) {
-      console.error('Failed to load segmentation symmetry mapping:', error);
-      alert(error?.message || 'Failed to load symmetry mapping.');
-    } finally {
-      symmetryFileInput.value = '';
-    }
-  });
-
   document.getElementById('mesh-seg-paint-symmetric')?.addEventListener('change', event => {
     paintSymmetric = !!event.target.checked;
     updateSegmentationSymmetryStatus();
   });
 
   document.querySelectorAll('[data-mesh-seg-symmetry-action]').forEach(button => {
-    const action = button.dataset.meshSegSymmetryAction;
+    const action = button.getAttribute('data-mesh-seg-symmetry-action');
+    button.addEventListener('pointerenter', () => previewSegmentationSymmetry(action));
+    button.addEventListener('pointerover', () => previewSegmentationSymmetry(action));
+    button.addEventListener('mouseover', () => previewSegmentationSymmetry(action));
+    button.addEventListener('pointermove', () => previewSegmentationSymmetry(action));
     button.addEventListener('mouseenter', () => previewSegmentationSymmetry(action));
     button.addEventListener('focus', () => previewSegmentationSymmetry(action));
+    button.addEventListener('pointerleave', clearPreview);
     button.addEventListener('mouseleave', clearPreview);
     button.addEventListener('blur', clearPreview);
     button.addEventListener('click', () => applySegmentationSymmetry(action));
@@ -2037,5 +2020,15 @@ export const meshSegmentationTask = {
       applyRenderMode();
       renderPanel();
     }
+  },
+
+  onSymmetryChanged() {
+    if (active) renderPanel();
+  },
+
+  onGeometryChanged() {
+    if (!active) return;
+    repaintAll();
+    updatePanelStats();
   },
 };

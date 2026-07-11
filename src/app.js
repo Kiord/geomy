@@ -10,6 +10,8 @@ import { HDRLoader } from 'three/examples/jsm/loaders/HDRLoader.js';
 import { EXRLoader } from 'three/examples/jsm/loaders/EXRLoader.js';
 import { getTaskCapabilities, taskAcceptsSharedMeshLoad } from './core/taskCapabilities.js';
 import { loadCanonicalOBJFile } from './io/objCanonicalLoader.js';
+import { arrayRows, fileKind, readSimpleArrayFile } from './io/taskDataDaemon.js';
+import { readSymmetryMappingFile, setMeshSymmetry } from './io/vertexSymmetry.js';
 
 // ── Central state ──
 export const app = {
@@ -20,6 +22,8 @@ export const app = {
   controlsMode: 'arcball',
   currentObject: null,
   currentFileName: '',
+  currentSymmetryFileName: '',
+  currentVertexUpdateFileName: '',
   task: null,
   tasks: {},
   dom: {},
@@ -73,7 +77,15 @@ loadEnvironmentMap(app.defaultEnvironmentUrl);
   app.dom.taskContent = document.getElementById('task-content');
   app.dom.taskMeshLoader = document.getElementById('task-mesh-loader');
   app.dom.taskLoadMeshBtn = document.getElementById('task-load-mesh-btn');
+  app.dom.taskLoadSymmetryBtn = document.getElementById('task-load-symmetry-btn');
+  app.dom.taskUpdateVerticesBtn = document.getElementById('task-update-vertices-btn');
+  app.dom.taskSymmetryRow = document.getElementById('task-symmetry-row');
+  app.dom.taskVertexUpdateRow = document.getElementById('task-vertex-update-row');
+  app.dom.taskSymmetryFileInput = document.getElementById('task-symmetry-file-input');
+  app.dom.taskVertexPositionFileInput = document.getElementById('task-vertex-position-file-input');
   app.dom.taskLoadedMeshName = document.getElementById('task-loaded-mesh-name');
+  app.dom.taskLoadedSymmetryName = document.getElementById('task-loaded-symmetry-name');
+  app.dom.taskUpdatedVerticesName = document.getElementById('task-updated-vertices-name');
   app.dom.vertexCount = document.getElementById('vertex-count');
 
   initTaskMeshLoader();
@@ -87,29 +99,368 @@ function initTaskMeshLoader() {
     app.dom.fileInput?.click();
   });
 
+  app.dom.taskLoadSymmetryBtn?.addEventListener('click', () => {
+    app.dom.taskSymmetryFileInput?.click();
+  });
+
+  app.dom.taskUpdateVerticesBtn?.addEventListener('click', () => {
+    app.dom.taskVertexPositionFileInput?.click();
+  });
+
+  app.dom.taskSymmetryFileInput?.addEventListener('change', async event => {
+    const input = event.target;
+    const file = input.files?.[0] || null;
+
+    try {
+      await loadSharedSymmetryFile(file);
+    } catch (error) {
+      console.error('Failed to load vertex symmetry mapping:', error);
+      alert(error?.message || 'Failed to load vertex symmetry mapping.');
+    } finally {
+      input.value = '';
+    }
+  });
+
+  app.dom.taskVertexPositionFileInput?.addEventListener('change', async event => {
+    const input = event.target;
+    const file = input.files?.[0] || null;
+
+    try {
+      await updateSharedVertexPositions(file);
+    } catch (error) {
+      console.error('Failed to update vertex positions:', error);
+      alert(error?.message || 'Failed to update vertex positions.');
+    } finally {
+      input.value = '';
+    }
+  });
+
   updateTaskMeshLoader();
+}
+
+function currentMeshes() {
+  const meshes = [];
+
+  app.currentObject?.traverse?.(object => {
+    if (object.isMesh && object.geometry?.attributes?.position) meshes.push(object);
+  });
+
+  return meshes;
+}
+
+function singleCurrentMesh(action = 'use this action') {
+  const meshes = currentMeshes();
+  if (meshes.length !== 1) {
+    throw new Error(`Load exactly one mesh to ${action}.`);
+  }
+  return meshes[0];
+}
+
+function canonicalData(mesh) {
+  return mesh?.geometry?.userData?.geomyCanonical || mesh?.userData?.geomyCanonical || null;
+}
+
+function canonicalVertexCount(mesh) {
+  return canonicalData(mesh)?.vertexCount || mesh?.geometry?.attributes?.position?.count || 0;
+}
+
+function rowsToPositionArray(array, vertexCount) {
+  const rows = array.rows || arrayRows(array.data, array.shape);
+  const flat = Array.from(array.data || [], Number);
+
+  if (rows.length === vertexCount && rows.every(row => row.length >= 3)) {
+    return new Float32Array(rows.flatMap(row => row.slice(0, 3).map(Number)));
+  }
+
+  if (flat.length === vertexCount * 3) {
+    return new Float32Array(flat);
+  }
+
+  throw new Error(`Vertex positions must be an Nx3 array with ${vertexCount.toLocaleString()} rows.`);
+}
+
+function isMeshPositionFile(file) {
+  const ext = String(file?.name || '').split('.').pop().toLowerCase();
+  return ['obj', 'stl', 'ply', 'glb', 'gltf'].includes(ext);
+}
+
+function disposeObject3D(object) {
+  object?.traverse?.(child => {
+    child.geometry?.dispose?.();
+    const materials = Array.isArray(child.material) ? child.material : [child.material];
+    materials.filter(Boolean).forEach(material => material.dispose?.());
+  });
+}
+
+async function objectFromMeshPositionFile(file) {
+  const ext = String(file?.name || '').split('.').pop().toLowerCase();
+
+  if (ext === 'obj') {
+    return prepareObjectGeometry(await loadCanonicalOBJFile(file));
+  }
+
+  const loader = loaders[ext];
+  if (!loader) throw new Error(`Unsupported vertex position mesh format: .${ext}`);
+
+  const url = URL.createObjectURL(file);
+
+  try {
+    if (ext === 'gltf' || ext === 'glb') {
+      const gltf = await loader.loadAsync(url);
+      return prepareObjectGeometry(gltf.scene);
+    }
+
+    const geometry = smoothImportedGeometry(await loader.loadAsync(url));
+    return new THREE.Mesh(geometry);
+  } finally {
+    URL.revokeObjectURL(url);
+  }
+}
+
+function positionArrayFromMeshObject(object) {
+  const meshes = [];
+  object?.traverse?.(child => {
+    if (child.isMesh && child.geometry?.attributes?.position) meshes.push(child);
+  });
+
+  if (object?.isMesh && object.geometry?.attributes?.position && !meshes.includes(object)) {
+    meshes.push(object);
+  }
+
+  if (meshes.length !== 1) {
+    throw new Error(`Vertex update mesh files must contain exactly one mesh (${meshes.length} found).`);
+  }
+
+  const mesh = meshes[0];
+  const canonical = canonicalData(mesh);
+  if (canonical?.positions) return new Float32Array(canonical.positions);
+
+  const position = mesh.geometry?.attributes?.position;
+  if (!position) throw new Error('The vertex update mesh has no position buffer.');
+  return new Float32Array(position.array);
+}
+
+async function readVertexPositionArray(file, vertexCount) {
+  const ext = String(file?.name || '').split('.').pop().toLowerCase();
+
+  if (isMeshPositionFile(file)) {
+    const object = await objectFromMeshPositionFile(file);
+    try {
+      return positionArrayFromMeshObject(object);
+    } finally {
+      disposeObject3D(object);
+    }
+  }
+
+  const kind = fileKind(file);
+  if (kind !== 'npy' && !(kind === 'text' && ext === 'txt')) {
+    throw new Error('Choose a .npy, .txt, or mesh file for vertex positions.');
+  }
+
+  return rowsToPositionArray(await readSimpleArrayFile(file), vertexCount);
+}
+
+function updateMeshPositionBuffers(mesh, positions) {
+  const vertexCount = canonicalVertexCount(mesh);
+  if (!vertexCount) throw new Error('The loaded mesh has no vertices.');
+  if (positions.length !== vertexCount * 3) {
+    throw new Error(`Vertex position array length ${positions.length} does not match ${vertexCount.toLocaleString()} vertices.`);
+  }
+
+  const canonical = canonicalData(mesh);
+  if (canonical?.positions && canonical.positions.length === positions.length) {
+    canonical.positions.set(positions);
+    if (canonical.positionAttribute) canonical.positionAttribute.needsUpdate = true;
+  }
+
+  const renderPosition = mesh.geometry?.attributes?.position;
+  if (!renderPosition) throw new Error('The loaded mesh has no render position buffer.');
+
+  const sourceVertexId = mesh.geometry.getAttribute('sourceVertexId');
+  if (sourceVertexId) {
+    for (let renderIndex = 0; renderIndex < renderPosition.count; renderIndex++) {
+      const vertexIndex = Math.floor(Number(sourceVertexId.getX(renderIndex)));
+      if (vertexIndex < 0 || vertexIndex >= vertexCount) continue;
+      const offset = vertexIndex * 3;
+      renderPosition.setXYZ(renderIndex, positions[offset], positions[offset + 1], positions[offset + 2]);
+    }
+  } else if (renderPosition.count === vertexCount) {
+    for (let i = 0; i < vertexCount; i++) {
+      const offset = i * 3;
+      renderPosition.setXYZ(i, positions[offset], positions[offset + 1], positions[offset + 2]);
+    }
+  } else {
+    throw new Error('This mesh has split render vertices but no source vertex map, so canonical positions cannot be updated safely.');
+  }
+
+  renderPosition.needsUpdate = true;
+  updateMeshNormalsAfterPositionSwap(mesh, positions);
+  mesh.geometry.computeBoundingBox?.();
+  mesh.geometry.computeBoundingSphere?.();
+}
+
+function normalizeNormalArray(array, index) {
+  const offset = index * 3;
+  const x = array[offset];
+  const y = array[offset + 1];
+  const z = array[offset + 2];
+  const length = Math.hypot(x, y, z);
+
+  if (length > 1e-20) {
+    array[offset] = x / length;
+    array[offset + 1] = y / length;
+    array[offset + 2] = z / length;
+    return;
+  }
+
+  array[offset] = 0;
+  array[offset + 1] = 0;
+  array[offset + 2] = 1;
+}
+
+function smoothCanonicalNormals(positions, faces) {
+  const vertexCount = Math.floor(positions.length / 3);
+  const out = new Float32Array(vertexCount * 3);
+  const ab = new THREE.Vector3();
+  const ac = new THREE.Vector3();
+  const normal = new THREE.Vector3();
+
+  for (let i = 0; i < faces.length; i += 3) {
+    const ia = faces[i];
+    const ib = faces[i + 1];
+    const ic = faces[i + 2];
+    if (ia < 0 || ib < 0 || ic < 0 || ia >= vertexCount || ib >= vertexCount || ic >= vertexCount) continue;
+
+    const ax = positions[ia * 3];
+    const ay = positions[ia * 3 + 1];
+    const az = positions[ia * 3 + 2];
+    const bx = positions[ib * 3];
+    const by = positions[ib * 3 + 1];
+    const bz = positions[ib * 3 + 2];
+    const cx = positions[ic * 3];
+    const cy = positions[ic * 3 + 1];
+    const cz = positions[ic * 3 + 2];
+
+    ab.set(bx - ax, by - ay, bz - az);
+    ac.set(cx - ax, cy - ay, cz - az);
+    normal.crossVectors(ab, ac);
+
+    [ia, ib, ic].forEach(index => {
+      out[index * 3] += normal.x;
+      out[index * 3 + 1] += normal.y;
+      out[index * 3 + 2] += normal.z;
+    });
+  }
+
+  for (let i = 0; i < vertexCount; i++) normalizeNormalArray(out, i);
+  return out;
+}
+
+function updateMeshNormalsAfterPositionSwap(mesh, positions) {
+  const canonical = canonicalData(mesh);
+  const faces = canonical?.faces;
+  const sourceVertexId = mesh.geometry?.getAttribute?.('sourceVertexId');
+  const renderNormal = mesh.geometry?.attributes?.normal;
+
+  if (faces?.length && sourceVertexId && renderNormal) {
+    const canonicalNormals = smoothCanonicalNormals(positions, faces);
+    canonical.generatedNormals = canonicalNormals;
+
+    for (let renderIndex = 0; renderIndex < renderNormal.count; renderIndex++) {
+      const vertexIndex = Math.floor(Number(sourceVertexId.getX(renderIndex)));
+      if (vertexIndex < 0 || vertexIndex >= canonicalNormals.length / 3) continue;
+      const offset = vertexIndex * 3;
+      renderNormal.setXYZ(renderIndex, canonicalNormals[offset], canonicalNormals[offset + 1], canonicalNormals[offset + 2]);
+    }
+
+    renderNormal.needsUpdate = true;
+    return;
+  }
+
+  mesh.geometry.computeVertexNormals?.();
+}
+
+async function loadSharedSymmetryFile(file) {
+  if (!file) return;
+
+  const mesh = singleCurrentMesh('load a symmetry mapping');
+  const symmetry = await readSymmetryMappingFile(file, mesh);
+  setMeshSymmetry(mesh, symmetry);
+  app.currentSymmetryFileName = file.name || 'symmetry mapping';
+  updateTaskMeshLoader();
+  app.task?.onSymmetryChanged?.();
+}
+
+async function updateSharedVertexPositions(file) {
+  if (!file) return;
+
+  const mesh = singleCurrentMesh('update vertex positions');
+  const vertexCount = canonicalVertexCount(mesh);
+  const positions = await readVertexPositionArray(file, vertexCount);
+
+  updateMeshPositionBuffers(mesh, positions);
+  app.currentVertexUpdateFileName = file.name || 'vertex positions';
+  updateEnvironmentUsage();
+  window.dispatchEvent(new CustomEvent('geomy:vertex-positions-updated', { detail: { mesh, fileName: file.name || '' } }));
+  app.task?.onGeometryChanged?.();
 }
 
 function updateTaskMeshLoader(task = app.task) {
   const row = app.dom.taskMeshLoader;
   const label = app.dom.taskLoadedMeshName;
+  const symmetryRow = app.dom.taskSymmetryRow;
+  const vertexUpdateRow = app.dom.taskVertexUpdateRow;
+  const symmetryLabel = app.dom.taskLoadedSymmetryName;
+  const vertexUpdateLabel = app.dom.taskUpdatedVerticesName;
+  const symmetryBtn = app.dom.taskLoadSymmetryBtn;
+  const verticesBtn = app.dom.taskUpdateVerticesBtn;
 
   if (!row) return;
 
   const capabilities = getTaskCapabilities(task);
   const showLoader = capabilities.usesTaskMeshLoader !== false;
+  const singleMeshLoaded = currentMeshes().length === 1;
 
   row.hidden = !showLoader;
   row.style.display = showLoader ? 'grid' : 'none';
 
+  if (symmetryRow) symmetryRow.hidden = !singleMeshLoaded;
+  if (vertexUpdateRow) vertexUpdateRow.hidden = !singleMeshLoaded;
+
+  if (symmetryBtn) {
+    symmetryBtn.hidden = !singleMeshLoaded;
+    symmetryBtn.disabled = !singleMeshLoaded;
+    symmetryBtn.title = singleMeshLoaded ? 'Load a vertex permutation as NPY or text.' : 'Load exactly one mesh first.';
+  }
+
+  if (verticesBtn) {
+    verticesBtn.hidden = !singleMeshLoaded;
+    verticesBtn.disabled = !singleMeshLoaded;
+    verticesBtn.title = singleMeshLoaded ? 'Replace vertex positions from an Nx3 NPY or text file.' : 'Load exactly one mesh first.';
+  }
+
   if (label) {
-    label.textContent = app.currentFileName || 'No mesh loaded';
+    label.textContent = app.currentFileName || '';
     label.title = app.currentFileName || '';
+  }
+
+  if (symmetryLabel) {
+    symmetryLabel.textContent = app.currentSymmetryFileName || '';
+    symmetryLabel.title = app.currentSymmetryFileName || '';
+  }
+
+  if (vertexUpdateLabel) {
+    vertexUpdateLabel.textContent = app.currentVertexUpdateFileName || '';
+    vertexUpdateLabel.title = app.currentVertexUpdateFileName || '';
   }
 }
 
 function setLoadedMeshName(name) {
   app.currentFileName = name || '';
+  if (!name) {
+    app.currentSymmetryFileName = '';
+    app.currentVertexUpdateFileName = '';
+  }
   updateTaskMeshLoader();
 }
 
@@ -428,6 +779,8 @@ export function loadFile(file) {
 
   const url = URL.createObjectURL(file);
   const ext = file.name.split('.').pop().toLowerCase();
+  app.currentSymmetryFileName = '';
+  app.currentVertexUpdateFileName = '';
   setLoadedMeshName(`Loading ${file.name}…`);
 
   if (app.currentObject) {
@@ -606,6 +959,3 @@ export function switchTask(taskId) {
   if (app.task?.activate) app.task.activate();
   updateTaskMeshLoader(app.task);
 }
-
-
-
