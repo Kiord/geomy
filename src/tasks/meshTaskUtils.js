@@ -1,8 +1,19 @@
 import * as THREE from 'three';
 import { app, updateEnvironmentUsage } from '../app.js';
+import {
+  cloneMaterialOrArray,
+  disposeMaterialOrArray,
+  getMaterialList,
+} from '../core/threeMaterials.js';
 
 const BRUSH_EPS = 1e-8;
 const _brushCameraLocal = new THREE.Vector3();
+
+export {
+  cloneMaterialOrArray,
+  disposeMaterialOrArray,
+  getMaterialList,
+};
 
 export function clamp(value, min, max) {
   return Math.max(min, Math.min(max, value));
@@ -90,15 +101,6 @@ export function canonicalVertexWorldPosition(mesh, vertexIndex) {
     .applyMatrix4(mesh.matrixWorld);
 }
 
-
-export function getMaterialList(material) {
-  if (!material) return [];
-  return Array.isArray(material) ? material : [material];
-}
-
-export function disposeMaterialOrArray(material) {
-  getMaterialList(material).forEach(mat => mat?.dispose?.());
-}
 
 export function roundNumber(value) {
   return Number(Number(value).toFixed(10));

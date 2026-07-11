@@ -2,6 +2,7 @@ import * as THREE from 'three';
 import { app } from '../app.js';
 import { MeshComponentIndex, assetBoundingBoxForObject, getCanonicalData, getCanonicalVertexCount } from './meshTaskUtils.js';
 import { downloadBlob } from '../util.js';
+import { escapeHtml } from '../core/textUtils.js';
 
 
 const componentIndex = new MeshComponentIndex();
@@ -50,16 +51,6 @@ const TEXTURE_SLOTS = [
   ['iridescenceMap', 'Iridescence'],
   ['iridescenceThicknessMap', 'Iridescence Thickness'],
 ];
-
-function escapeHtml(value) {
-  return String(value ?? '').replace(/[&<>"']/g, ch => ({
-    '&': '&amp;',
-    '<': '&lt;',
-    '>': '&gt;',
-    '"': '&quot;',
-    "'": '&#39;',
-  }[ch]));
-}
 
 function texturePreviewSrc(texture) {
   const img = texture?.image;
@@ -298,7 +289,7 @@ function renderPanel() {
   }
 }
 
-export const inpectTask = {
+export const inspectTask = {
   id: 'view',
   onDblClick: null, // let global handler recenter
 
@@ -316,4 +307,3 @@ export const inpectTask = {
   }
 
 };
-

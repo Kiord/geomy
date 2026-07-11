@@ -9,7 +9,7 @@ import { landmarkPickingTask } from './tasks/landmarkPicking.js';
 import { meshMaskingTask } from './tasks/meshMasking.js';
 import { meshSegmentationTask } from './tasks/meshSegmentation.js';
 import { meshRigidAlignTask } from './tasks/meshRigidAlign.js';
-import { inpectTask } from './tasks/inspect.js';
+import { inspectTask } from './tasks/inspect.js';
 import { initVizPanel } from './panels/visualization.js';
 import { initGeometryInspection } from './panels/geometryInspection.js';
 
@@ -125,7 +125,7 @@ function boot() {
   initThemeToggle();
   initSidePanelToggles();
 
-  registerTask(inpectTask);
+  registerTask(inspectTask);
   registerTask(landmarkPickingTask);
   registerTask(meshMaskingTask);
   registerTask(meshSegmentationTask);
@@ -156,12 +156,8 @@ function boot() {
     meshMaskingTask,
     meshSegmentationTask,
     meshRigidAlignTask,
-    inpectTask,
+    inspectTask,
   ].forEach(wrapTaskFileLoaded);
-
-  //viewOnlyTask.onFileLoaded = resetSharedPanelsForFile;
-
-  
 
   // Default task
   const taskSelect = document.getElementById('task-select');
@@ -296,4 +292,3 @@ function boot() {
 }
 
 boot();
-

@@ -1,4 +1,5 @@
 import { downloadBlob } from '../util.js';
+import { escapeAttr, escapeHtml } from '../core/textUtils.js';
 import { downloadNpy, parseNpy } from './numpyBundle.js';
 
 export function stripKnownExtension(name, fallback = 'data') {
@@ -456,17 +457,4 @@ export function bindDialogModeVisibility(root, radioName) {
   });
 
   sync();
-}
-
-function escapeHtml(value) {
-  return String(value ?? '')
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&#39;');
-}
-
-function escapeAttr(value) {
-  return escapeHtml(value).replace(/`/g, '&#96;');
 }

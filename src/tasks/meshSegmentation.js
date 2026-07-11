@@ -3,6 +3,7 @@ import { app } from '../app.js';
 import { HistoryStack } from '../core/HistoryStack.js';
 import { GEOMY_VERSION } from '../version.js';
 import { raycast, downloadBlob } from '../util.js';
+import { escapeHtml, formatMemoryEstimate } from '../core/textUtils.js';
 import { downloadArrayBundle, jsonEntry, npyEntry, parseBundleArrays, readArrayBundle } from '../io/numpyBundle.js';
 import {
   assertArrayFileKind,
@@ -754,13 +755,6 @@ function setBrushRadius(value) {
   updateCursor();
 }
 
-function formatBytes(bytes) {
-  if (!Number.isFinite(bytes) || bytes <= 0) return '0 MB';
-  const mb = bytes / (1024 * 1024);
-  if (mb < 1024) return `${Math.ceil(mb).toLocaleString()} MB`;
-  return `${(mb / 1024).toFixed(1)} GB`;
-}
-
 function updateGeodesicBrushStatus() {
   const statusEl = document.getElementById('mesh-seg-geodesic-status');
   const progressEl = document.getElementById('mesh-seg-geodesic-progress');
@@ -810,7 +804,7 @@ async function setUseGeodesicBrush(value) {
     const ok = await precomputeGeodesicBrush(currentMeshes, {
       confirmLarge(totalVertices) {
         const bytes = geodesicBrushMemoryEstimateBytes(totalVertices);
-        return window.confirm(`This mesh has ${totalVertices.toLocaleString()} vertices. All-pairs geodesic precompute can take a while and needs about ${formatBytes(bytes)} for the LUT. Continue?`);
+        return window.confirm(`This mesh has ${totalVertices.toLocaleString()} vertices. All-pairs geodesic precompute can take a while and needs about ${formatMemoryEstimate(bytes)} for the LUT. Continue?`);
       },
       onProgress: updateGeodesicBrushStatus,
     });
@@ -1242,15 +1236,6 @@ function applySegmentationSymmetry(action) {
   commit(`segmentation symmetry ${action}`, () => {
     applySegmentationValues(mesh, transformedSegmentationValues(mesh, action));
   });
-}
-
-function escapeHtml(value) {
-  return String(value ?? '')
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&#39;');
 }
 
 function renderRegionList() {

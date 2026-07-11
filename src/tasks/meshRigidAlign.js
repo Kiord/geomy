@@ -19,6 +19,7 @@ import {
 } from '../landmarks/landmarkVisuals.js';
 import { GEOMY_VERSION } from '../version.js';
 import { downloadBlob } from '../util.js';
+import { formatBytes, safeFilename } from '../core/textUtils.js';
 import { downloadArrayBundle, downloadNpy, jsonEntry, npyEntry, parseBundleArrays, readArrayBundle } from '../io/numpyBundle.js';
 import { loadCanonicalOBJFile } from '../io/objCanonicalLoader.js';
 import {
@@ -50,11 +51,15 @@ import {
   TemporaryVisualizationState,
   clamp,
   canonicalTriangleVertexIndicesFromHit,
+  cloneMaterialOrArray,
   collectHitVertexIndices,
+  disposeMaterialOrArray,
   ensureColorAttribute,
   getCanonicalPositionAttribute,
   getCanonicalVertexCount,
+  getMaterialList,
   getMeshLabel,
+  getViewportRect,
   isTextInputTarget,
   roundNumber,
   screenRadiusToWorldRadius,
@@ -215,10 +220,6 @@ const cursorState = {
 
 // ── Generic helpers ───────────────────────────────────────────────
 
-function getViewportRect() {
-  return app.dom.viewport.getBoundingClientRect();
-}
-
 function focusViewportForKeys() {
   const canvas = app.renderer?.domElement;
   if (!canvas) return;
@@ -230,16 +231,6 @@ function focusViewportForKeys() {
 
 function sideLabel(side) {
   return side === 'source' ? 'Source' : 'Target';
-}
-
-function safeFilename(value, fallback = 'mesh') {
-  const safe = String(value || fallback)
-    .trim()
-    .replace(/[^a-z0-9._-]+/gi, '-')
-    .replace(/^-+|-+$/g, '')
-    .toLowerCase();
-
-  return safe || fallback;
 }
 
 function getObjectForSide(side) {
@@ -293,30 +284,6 @@ function makeTaskMaterial(side) {
   material.toneMapped = false;
   material.userData.meshRigidAlignSide = side;
   return material;
-}
-
-function getMaterialList(material) {
-  if (!material) return [];
-  return Array.isArray(material) ? material : [material];
-}
-
-function cloneMaterialOrArray(material) {
-  if (!material) return material;
-  return Array.isArray(material)
-    ? material.map(mat => mat?.clone?.() || mat)
-    : material.clone?.() || material;
-}
-
-function disposeMaterialOrArray(material) {
-  getMaterialList(material).forEach(mat => mat?.dispose?.());
-}
-
-function formatBytes(bytes) {
-  const n = Number(bytes) || 0;
-  if (n < 1024) return `${Math.round(n)} B`;
-  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
-  if (n < 1024 * 1024 * 1024) return `${(n / (1024 * 1024)).toFixed(1)} MB`;
-  return `${(n / (1024 * 1024 * 1024)).toFixed(2)} GB`;
 }
 
 function clearDistanceFieldCache(side = null) {
@@ -3993,7 +3960,7 @@ function exportTransformedSourceMesh(format = 'obj') {
   const clone = cloneTransformedSourceForExport();
   if (!clone) return alert('Load source and target meshes before exporting the aligned source.');
 
-  const base = `rigid-align-${safeFilename(name)}-transformed`;
+  const base = `rigid-align-${safeFilename(name, 'mesh')}-transformed`;
   const exporterFormat = String(format || 'glb').toLowerCase();
 
   if (exporterFormat === 'npy') {

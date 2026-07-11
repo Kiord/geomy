@@ -3,6 +3,7 @@ import { app } from '../app.js';
 import { HistoryStack } from '../core/HistoryStack.js';
 import { GEOMY_VERSION } from '../version.js';
 import { raycast, downloadBlob } from '../util.js';
+import { escapeHtml, formatMemoryEstimate, safeFilename } from '../core/textUtils.js';
 import { downloadArrayBundle, jsonEntry, npyEntry, parseBundleArrays, readArrayBundle } from '../io/numpyBundle.js';
 import {
   assertArrayFileKind,
@@ -1034,13 +1035,6 @@ function refreshPreviewAtCursor() {
   refreshCursorHitAndPreview(rect.left + cursorState.x, rect.top + cursorState.y);
 }
 
-function formatBytes(bytes) {
-  if (!Number.isFinite(bytes) || bytes <= 0) return '0 MB';
-  const mb = bytes / (1024 * 1024);
-  if (mb < 1024) return `${Math.ceil(mb).toLocaleString()} MB`;
-  return `${(mb / 1024).toFixed(1)} GB`;
-}
-
 function updateGeodesicBrushStatus() {
   const statusEl = document.getElementById('mesh-mask-geodesic-status');
   const progressEl = document.getElementById('mesh-mask-geodesic-progress');
@@ -1087,7 +1081,7 @@ async function setUseGeodesicBrush(value) {
     const ok = await precomputeGeodesicBrush(currentMeshes, {
       confirmLarge(totalVertices) {
         const bytes = geodesicBrushMemoryEstimateBytes(totalVertices);
-        return window.confirm(`This mesh has ${totalVertices.toLocaleString()} vertices. All-pairs geodesic precompute can take a while and needs about ${formatBytes(bytes)} for the LUT. Continue?`);
+        return window.confirm(`This mesh has ${totalVertices.toLocaleString()} vertices. All-pairs geodesic precompute can take a while and needs about ${formatMemoryEstimate(bytes)} for the LUT. Continue?`);
       },
       onProgress: updateGeodesicBrushStatus,
     });
@@ -1197,16 +1191,6 @@ function aggregateStats(meshes) {
   };
 }
 
-function safeFilename(value, fallback = 'mask') {
-  const safe = String(value || fallback)
-    .trim()
-    .replace(/[^a-z0-9._-]+/gi, '-')
-    .replace(/^-+|-+$/g, '')
-    .toLowerCase();
-
-  return safe || fallback;
-}
-
 function maskExportPayload(mask, meshes) {
   const perMesh = meshes.map((mesh, meshIndex) => {
     const selectedVertexIndices = Array.from(getMaskSelection(mask, mesh)).sort((a, b) => a - b);
@@ -1260,7 +1244,7 @@ function exportArrayBundle(extension = 'npz') {
   if (!meshes.length) return alert('No mesh loaded.');
   const activeMask = getActiveMask();
   const ext = extension === 'zip' ? 'zip' : 'npz';
-  downloadArrayBundle(maskArrayExportEntries(activeMask, meshes), `mesh-mask-${safeFilename(maskName(activeMask, activeMaskIndex))}.${ext}`);
+  downloadArrayBundle(maskArrayExportEntries(activeMask, meshes), `mesh-mask-${safeFilename(maskName(activeMask, activeMaskIndex), 'mask')}.${ext}`);
 }
 
 function exportByFormat(format) {
@@ -1583,7 +1567,7 @@ function exportJSON() {
     mask: maskPayload,
   };
 
-  const filename = `mesh-mask-${safeFilename(maskPayload.name)}.json`;
+  const filename = `mesh-mask-${safeFilename(maskPayload.name, 'mask')}.json`;
   downloadBlob(JSON.stringify(payload, null, 2), filename, 'application/json');
 }
 
@@ -1966,15 +1950,6 @@ function unbindViewportEvents() {
   window.removeEventListener('blur', onWindowBlur);
 
   resetCursorIndicator({ remove: true });
-}
-
-function escapeHtml(value) {
-  return String(value ?? '')
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&#39;');
 }
 
 function renderMaskList() {

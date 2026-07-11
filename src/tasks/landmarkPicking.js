@@ -14,6 +14,7 @@ import {
 } from '../landmarks/landmarkVisuals.js';
 import { GEOMY_VERSION } from '../version.js';
 import { raycast, downloadBlob } from '../util.js';
+import { escapeHtml } from '../core/textUtils.js';
 import { downloadArrayBundle, jsonEntry, npyEntry, parseBundleArrays, readArrayBundle } from '../io/numpyBundle.js';
 import {
   arrayByName,
@@ -34,7 +35,7 @@ import {
   stripKnownExtension,
   setDialogRadioOptionDisabled,
 } from '../io/taskDataDaemon.js';
-import { canonicalTriangleVertexIndicesFromHit, canonicalVertexWorldPosition, getCanonicalPositionAttribute, rootLocalPointFromWorld, worldPointFromRootLocal } from './meshTaskUtils.js';
+import { canonicalTriangleVertexIndicesFromHit, canonicalVertexWorldPosition, clamp, getCanonicalPositionAttribute, getViewportRect, rootLocalPointFromWorld, worldPointFromRootLocal } from './meshTaskUtils.js';
 import '../css/landmarkPicking.css';
 
 const COLORS = LANDMARK_COLORS;
@@ -85,14 +86,6 @@ const viewportFocus = new ViewportFocusManager({
 });
 
 // ── Utilities ─────────────────────────────────────────────────────
-
-function clamp(value, min, max) {
-  return Math.max(min, Math.min(max, value));
-}
-
-function getViewportRect() {
-  return app.dom.viewport.getBoundingClientRect();
-}
 
 // ── Cursor indicator ──────────────────────────────────────────────
 
@@ -2032,15 +2025,6 @@ function exportJSON() {
   };
 
   downloadBlob(JSON.stringify(payload, null, 2), 'landmarks.json', 'application/json');
-}
-
-function escapeHtml(value) {
-  return String(value ?? '')
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&#39;');
 }
 
 function updateStackButtons() {

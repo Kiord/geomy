@@ -8,6 +8,11 @@ import {
   setEnvironmentBackgroundBlurriness,
   setEnvironmentBackgroundVisible,
 } from '../app.js';
+import {
+  cloneMaterialOrArray,
+  disposeMaterialOrArray,
+  getMaterialList,
+} from '../core/threeMaterials.js';
 
 let normalsHelpers = [];
 let bboxHelper = null;
@@ -285,23 +290,6 @@ export function initVizPanel() {
 
   function withLightIntensity(colorValue) {
     return new THREE.Color(colorValue).multiplyScalar(getLightIntensity());
-  }
-
-  function getMaterialList(material) {
-    if (!material) return [];
-    return Array.isArray(material) ? material : [material];
-  }
-
-  function cloneMaterialOrArray(material) {
-    if (Array.isArray(material)) {
-      return material.map(mat => mat?.clone?.() || mat);
-    }
-
-    return material?.clone?.() || material;
-  }
-
-  function disposeMaterialOrArray(material) {
-    getMaterialList(material).forEach(mat => mat?.dispose?.());
   }
 
   function ensureLambertLights() {
@@ -1435,7 +1423,6 @@ export function initVizPanel() {
     },
   };
 }
-
 
 
 

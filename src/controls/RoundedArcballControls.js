@@ -911,4 +911,3 @@ export class RoundedArcballControls extends THREE.EventDispatcher {
   }
 }
 
-export { RoundedArcballControls as RoundedArcBallControls };
