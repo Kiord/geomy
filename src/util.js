@@ -20,11 +20,66 @@ export function raycast(event) {
 }
 
 // ── Download blob ──
-export function downloadBlob(content, filename, mime = 'text/plain') {
-  const blob = new Blob([content], { type: mime });
+function blobFromContent(content, mime) {
+  if (content instanceof Blob) {
+    return content.type ? content : new Blob([content], { type: mime });
+  }
+
+  return new Blob([content], { type: mime });
+}
+
+function anchorDownload(blob, filename) {
   const a = document.createElement('a');
   a.href = URL.createObjectURL(blob);
   a.download = filename;
   a.click();
-  URL.revokeObjectURL(a.href);
+  window.setTimeout(() => URL.revokeObjectURL(a.href), 0);
+}
+
+function pickerTypesFor(filename, mime) {
+  const ext = String(filename || '').split('.').pop()?.toLowerCase();
+  if (!ext || ext === filename) return [];
+
+  return [{
+    description: `${ext.toUpperCase()} file`,
+    accept: {
+      [mime || 'application/octet-stream']: [`.${ext}`],
+    },
+  }];
+}
+
+async function tryNativeSave(blob, filename, mime) {
+  if (typeof window.showSaveFilePicker !== 'function') return false;
+
+  let handle;
+  try {
+    handle = await window.showSaveFilePicker({
+      suggestedName: filename,
+      types: pickerTypesFor(filename, mime || blob.type),
+    });
+  } catch (error) {
+    if (error?.name === 'AbortError') return true;
+    console.warn('Native save dialog failed, falling back to browser download:', error);
+    return false;
+  }
+
+  try {
+    const writable = await handle.createWritable();
+    await writable.write(blob);
+    await writable.close();
+    return true;
+  } catch (error) {
+    console.warn('Native file save failed, falling back to browser download:', error);
+    return false;
+  }
+}
+
+async function saveBlob(blob, filename, mime) {
+  if (await tryNativeSave(blob, filename, mime)) return;
+  anchorDownload(blob, filename);
+}
+
+export function downloadBlob(content, filename, mime = 'text/plain') {
+  const blob = blobFromContent(content, mime);
+  void saveBlob(blob, filename, mime);
 }

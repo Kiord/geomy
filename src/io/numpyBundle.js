@@ -1,5 +1,6 @@
 import JSZip from 'jszip';
 import { dump, load } from 'npyjs';
+import { downloadBlob } from '../util.js';
 
 const SAVE_DTYPES = {
   bool: 'b1',
@@ -127,20 +128,10 @@ export async function parseBundleArrays(entries) {
 
 export async function downloadArrayBundle(entries, filename) {
   const bytes = await makeZip(entries);
-  const blob = new Blob([bytes], { type: 'application/zip' });
-  const a = document.createElement('a');
-  a.href = URL.createObjectURL(blob);
-  a.download = filename;
-  a.click();
-  URL.revokeObjectURL(a.href);
+  downloadBlob(bytes, filename, 'application/zip');
 }
 
 export function downloadNpy(data, shape, dtype, filename) {
   const bytes = writeNpy(data, shape, dtype);
-  const blob = new Blob([bytes], { type: 'application/octet-stream' });
-  const a = document.createElement('a');
-  a.href = URL.createObjectURL(blob);
-  a.download = filename;
-  a.click();
-  URL.revokeObjectURL(a.href);
+  downloadBlob(bytes, filename, 'application/octet-stream');
 }

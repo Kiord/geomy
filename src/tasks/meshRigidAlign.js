@@ -55,6 +55,7 @@ import {
   collectHitVertexIndices,
   disposeMaterialOrArray,
   ensureColorAttribute,
+  getCanonicalData,
   getCanonicalPositionAttribute,
   getCanonicalVertexCount,
   getMaterialList,
@@ -3920,65 +3921,102 @@ function openTransformSaveDialog() {
   });
 }
 
-function restoreOriginalMaterialsForExport(cloneRoot, originalRoot) {
-  const originalMeshes = [];
-  originalRoot?.traverse?.(mesh => {
-    if (mesh.isMesh) originalMeshes.push(mesh);
-  });
-
-  let meshIndex = 0;
-  cloneRoot?.traverse?.(mesh => {
-    if (!mesh.isMesh) return;
-
-    const originalMesh = originalMeshes[meshIndex++];
-    const originalMaterial = originalMesh?.userData?.geomyRigidOriginalMaterial || originalMesh?.material;
-    if (!originalMaterial) return;
-
-    mesh.material = cloneMaterialOrArray(originalMaterial);
-    // Object3D.clone serializes userData through JSON, which turns stored
-    // Material/Color instances into plain objects. Do not let exporters see those.
-    delete mesh.userData.geomyRigidOriginalMaterial;
-  });
+function indexArrayForExport(values, vertexCount) {
+  const ArrayType = vertexCount > 65535 ? Uint32Array : Uint16Array;
+  return new THREE.BufferAttribute(new ArrayType(Array.from(values, Number)), 1);
 }
 
-function cloneTransformedSourceForExport() {
-  if (!sourceObject) return null;
+function exportMaterialForMesh(mesh) {
+  const material = mesh?.userData?.geomyRigidOriginalMaterial || mesh?.material;
+  const cloned = cloneMaterialOrArray(material);
+  if (Array.isArray(cloned)) return cloned.find(Boolean) || new THREE.MeshStandardMaterial({ color: '#e0e0e0', roughness: 0.4, metalness: 0.1 });
+  return cloned || new THREE.MeshStandardMaterial({ color: '#e0e0e0', roughness: 0.4, metalness: 0.1 });
+}
 
-  const sourceToTarget = sourceAssetToTargetAssetMatrix();
-  if (!sourceToTarget) return null;
+function transformedCanonicalGeometryForExport(mesh, targetRootInverse) {
+  const position = getCanonicalPositionAttribute(mesh) || mesh?.geometry?.attributes?.position;
+  if (!mesh?.isMesh || !position) return null;
 
-  const clone = sourceObject.clone(true);
-  restoreOriginalMaterialsForExport(clone, sourceObject);
-  setRootMatrix(clone, sourceToTarget);
-  clone.updateMatrixWorld(true);
-  return clone;
+  mesh.updateMatrixWorld(true);
+  const matrix = new THREE.Matrix4().multiplyMatrices(targetRootInverse, mesh.matrixWorld);
+  const point = new THREE.Vector3();
+  const positions = new Float32Array(position.count * 3);
+
+  for (let i = 0; i < position.count; i++) {
+    point.fromBufferAttribute(position, i).applyMatrix4(matrix);
+    positions[i * 3] = point.x;
+    positions[i * 3 + 1] = point.y;
+    positions[i * 3 + 2] = point.z;
+  }
+
+  const geometry = new THREE.BufferGeometry();
+  geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+
+  const canonical = getCanonicalData(mesh);
+  if (canonical?.faces?.length) {
+    geometry.setIndex(indexArrayForExport(canonical.faces, position.count));
+  } else if (mesh.geometry?.index) {
+    geometry.setIndex(indexArrayForExport(mesh.geometry.index.array, position.count));
+  }
+
+  const sourceUv = !canonical?.faces && mesh.geometry?.attributes?.uv?.count === position.count
+    ? mesh.geometry.attributes.uv
+    : null;
+  if (sourceUv) {
+    geometry.setAttribute('uv', sourceUv.clone());
+  }
+
+  geometry.computeVertexNormals();
+  geometry.computeBoundingBox();
+  geometry.computeBoundingSphere();
+  return geometry;
+}
+
+function canonicalAlignedSourceForExport() {
+  if (!sourceObject || !targetObject) return null;
+
+  sourceObject.updateMatrixWorld(true);
+  targetObject.updateMatrixWorld(true);
+
+  const targetRootInverse = targetObject.matrixWorld.clone().invert();
+  const root = new THREE.Group();
+  root.name = sourceObject.name || 'Aligned source';
+  let exportedMeshes = 0;
+
+  sourceObject.traverse(mesh => {
+    const geometry = transformedCanonicalGeometryForExport(mesh, targetRootInverse);
+    if (!geometry) return;
+
+    const out = new THREE.Mesh(geometry, exportMaterialForMesh(mesh));
+    out.name = mesh.name || `source-${exportedMeshes + 1}`;
+    root.add(out);
+    exportedMeshes += 1;
+  });
+
+  return exportedMeshes ? root : null;
 }
 
 function exportTransformedSourceMesh(format = 'obj') {
-  if (!sourceObject) return alert('Load a source mesh first.');
+  if (!sourceObject) throw new Error('Load a source mesh first.');
   const name = sourceFileName ? sourceFileName.replace(/\.[^.]+$/, '') : 'source-mesh';
-  const clone = cloneTransformedSourceForExport();
-  if (!clone) return alert('Load source and target meshes before exporting the aligned source.');
+  const exportObject = canonicalAlignedSourceForExport();
+  if (!exportObject) throw new Error('Load source and target meshes before exporting the aligned source.');
 
   const base = `rigid-align-${safeFilename(name, 'mesh')}-transformed`;
   const exporterFormat = String(format || 'glb').toLowerCase();
 
   if (exporterFormat === 'npy') {
     const rows = [];
-    clone.updateMatrixWorld(true);
-    clone.traverse(child => {
+    exportObject.traverse(child => {
       if (!child.isMesh) return;
-      const position = getCanonicalPositionAttribute(child) || child.geometry?.attributes?.position;
+      const position = child.geometry?.attributes?.position;
       if (!position) return;
-      child.updateMatrixWorld(true);
-      const world = new THREE.Vector3();
       for (let i = 0; i < position.count; i++) {
-        world.fromBufferAttribute(position, i).applyMatrix4(child.matrixWorld);
-        rows.push(world.x, world.y, world.z);
+        rows.push(position.getX(i), position.getY(i), position.getZ(i));
       }
     });
 
-    if (!rows.length) return alert('The source mesh has no vertex positions to export.');
+    if (!rows.length) throw new Error('The source mesh has no vertex positions to export.');
     downloadNpy(new Float32Array(rows), [rows.length / 3, 3], 'float32', `${base}-vertices.npy`);
     return;
   }
@@ -3986,7 +4024,7 @@ function exportTransformedSourceMesh(format = 'obj') {
   if (exporterFormat === 'glb' || exporterFormat === 'gltf') {
     const exporter = new GLTFExporter();
     exporter.parse(
-      clone,
+      exportObject,
       result => {
         if (result instanceof ArrayBuffer) {
           downloadBlob(result, `${base}.glb`, 'model/gltf-binary');
@@ -4005,7 +4043,7 @@ function exportTransformedSourceMesh(format = 'obj') {
 
   if (exporterFormat === 'ply') {
     const exporter = new PLYExporter();
-    exporter.parse(clone, result => {
+    exporter.parse(exportObject, result => {
       const blobType = result instanceof ArrayBuffer ? 'application/octet-stream' : 'text/plain';
       downloadBlob(result, `${base}.ply`, blobType);
     }, { binary: false });
@@ -4013,13 +4051,44 @@ function exportTransformedSourceMesh(format = 'obj') {
   }
 
   if (exporterFormat === 'stl') {
-    const result = new STLExporter().parse(clone, { binary: false });
+    const result = new STLExporter().parse(exportObject, { binary: false });
     downloadBlob(result, `${base}.stl`, 'model/stl');
     return;
   }
 
-  const text = new OBJExporter().parse(clone);
+  const text = new OBJExporter().parse(exportObject);
   downloadBlob(text, `${base}.obj`, 'text/plain');
+}
+
+function openSourceSaveDialog() {
+  openTaskDataDialog({
+    title: 'Save Aligned Source',
+    html: `
+      <div class="task-data-dialog-section">
+        <div class="task-data-dialog-section-title">Destination</div>
+        <label class="radio-label"><input type="radio" name="rigid-source-save-mode" value="npy" checked> Vertex NPY</label>
+        <label class="radio-label"><input type="radio" name="rigid-source-save-mode" value="glb"> GLB</label>
+        <label class="radio-label"><input type="radio" name="rigid-source-save-mode" value="gltf"> GLTF</label>
+        <label class="radio-label"><input type="radio" name="rigid-source-save-mode" value="obj"> OBJ</label>
+        <label class="radio-label"><input type="radio" name="rigid-source-save-mode" value="ply"> PLY</label>
+        <label class="radio-label"><input type="radio" name="rigid-source-save-mode" value="stl"> STL</label>
+      </div>
+      <div class="task-data-dialog-actions">
+        <button type="button" class="btn btn-export" data-rigid-source-save-apply>Save</button>
+      </div>
+    `,
+    onMount(root, { close, setMessage }) {
+      root.querySelector('[data-rigid-source-save-apply]')?.addEventListener('click', () => {
+        try {
+          exportTransformedSourceMesh(checkedDialogValue(root, 'rigid-source-save-mode') || 'npy');
+          close();
+        } catch (error) {
+          console.error('Failed to save aligned source:', error);
+          setMessage(error?.message || 'Failed to save aligned source.', 'error');
+        }
+      });
+    },
+  });
 }
 
 function sessionExportPayload() {
@@ -4706,18 +4775,7 @@ function renderPanel() {
     </div>
     <div class="mesh-rigid-compact-actions" style="margin-top:6px;">
       <button class="btn btn-mini btn-export" id="mesh-rigid-export-transform">Save Transform</button>
-    </div>
-    <div class="material-row" style="margin-top:6px;">
-      <label>Source</label>
-      <select id="mesh-rigid-source-format">
-        <option value="npy">Vertex NPY</option>
-        <option value="glb">GLB</option>
-        <option value="gltf">GLTF</option>
-        <option value="obj">OBJ</option>
-        <option value="ply">PLY</option>
-        <option value="stl">STL</option>
-      </select>
-      <button class="btn btn-mini" id="mesh-rigid-export-source">Export</button>
+      <button class="btn btn-mini btn-export" id="mesh-rigid-export-source">Save Source</button>
     </div>
     <input type="file" id="mesh-rigid-import-file" class="mesh-rigid-file-input" accept="application/json,.json">
   `;
@@ -4821,7 +4879,7 @@ function bindPanelEvents() {
   document.getElementById('mesh-rigid-align')?.addEventListener('click', alignSource);
   document.getElementById('mesh-rigid-reset-source')?.addEventListener('click', resetSourceTransform);
   document.getElementById('mesh-rigid-export-transform')?.addEventListener('click', openTransformSaveDialog);
-  document.getElementById('mesh-rigid-export-source')?.addEventListener('click', () => exportTransformedSourceMesh(document.getElementById('mesh-rigid-source-format')?.value || 'glb'));
+  document.getElementById('mesh-rigid-export-source')?.addEventListener('click', openSourceSaveDialog);
   document.getElementById('mesh-rigid-import-file')?.addEventListener('change', event => importSessionFile(event.target.files?.[0]));
   updateRigidIoStatus();
   updateRigidGeodesicBrushStatus();
