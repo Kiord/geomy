@@ -399,6 +399,22 @@ body.panel-top-collapsed .topbar-toggle {
   user-select: none;
 }
 
+#geomy-version {
+  position: absolute;
+  right: calc(var(--right-panel-active-width) + 10px);
+  bottom: 10px;
+  z-index: 30;
+  pointer-events: none;
+
+  color: var(--text-dim);
+  font-family: var(--font-family);
+  font-size: 0.66rem;
+  line-height: 1;
+  opacity: 0.58;
+  text-shadow: 0 1px 2px var(--bg);
+  user-select: none;
+}
+
 #topbar .logo {
   display: inline-flex;
   align-items: center;

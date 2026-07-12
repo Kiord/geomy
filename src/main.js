@@ -12,6 +12,7 @@ import { meshRigidAlignTask } from './tasks/meshRigidAlign.js';
 import { inspectTask } from './tasks/inspect.js';
 import { initVizPanel } from './panels/visualization.js';
 import { initGeometryInspection } from './panels/geometryInspection.js';
+import { GEOMY_VERSION } from './version.js';
 
 function initSidePanelToggles() {
   const topBtn = document.getElementById('toggle-topbar');
@@ -118,12 +119,21 @@ function initSidePanelToggles() {
   window.addEventListener('orientationchange', () => requestAnimationFrame(resolveCurrentOverlap));
 }
 
+function initVersionBadge() {
+  const badge = document.getElementById('geomy-version');
+  if (!badge) return;
+
+  badge.textContent = `geomy ${GEOMY_VERSION}`;
+  badge.title = `geomy ${GEOMY_VERSION}`;
+}
+
 // ── Boot ──
 function boot() {
   initScene();
   initDragDrop();
   initThemeToggle();
   initSidePanelToggles();
+  initVersionBadge();
 
   registerTask(inspectTask);
   registerTask(landmarkPickingTask);
