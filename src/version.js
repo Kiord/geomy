@@ -1,1 +1,4 @@
-export const GEOMY_VERSION = '0.0.0';
+export const GEOMY_VERSION = __GEOMY_VERSION__;
+export const GEOMY_COMMIT_HASH = __GEOMY_COMMIT_HASH__;
+export const GEOMY_COMMIT_SHORT_HASH = __GEOMY_COMMIT_SHORT_HASH__;
+export const GEOMY_COMMIT_URL = __GEOMY_COMMIT_URL__;
