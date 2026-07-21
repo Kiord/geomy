@@ -102,6 +102,10 @@ button:disabled.btn {
   margin-top: 6px;
 }
 
+.landmark-symmetry-actions {
+  margin-bottom: 8px;
+}
+
 
 /* Modifier cursor affordance in the viewport. */
 .landmark-cursor-indicator {

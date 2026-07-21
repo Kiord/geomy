@@ -35,7 +35,8 @@ import {
   stripKnownExtension,
   setDialogRadioOptionDisabled,
 } from '../io/taskDataDaemon.js';
-import { canonicalTriangleVertexIndicesFromHit, canonicalVertexWorldPosition, clamp, getCanonicalPositionAttribute, getViewportRect, rootLocalPointFromWorld, worldPointFromRootLocal } from './meshTaskUtils.js';
+import { getSymmetryMapping, symmetryPairs } from '../io/vertexSymmetry.js';
+import { canonicalTriangleVertexIndicesFromHit, canonicalVertexWorldPosition, clamp, getCanonicalData, getCanonicalPositionAttribute, getViewportRect, renderVertexToCanonical, rootLocalPointFromWorld, worldPointFromRootLocal } from './meshTaskUtils.js';
 import '../css/landmarkPicking.css';
 
 const COLORS = LANDMARK_COLORS;
@@ -60,12 +61,17 @@ let labelScale = 1.0;      // multiplies the text size independently
 // Preview / highlight state
 let previewSphere = null;
 let hoveredLandmarkIndex = -1;
+let symmetryPreviewGroup = null;
+const symmetryPreviewColoredIndices = new Set();
+let symmetricPlacePreviewSphere = null;
 
 const settings = {
   snapMode: 'triangle',
+  placeSymmetric: false,
 };
 
 const history = new HistoryStack({ limit: STACK_LIMIT });
+const meshTopologyCache = new WeakMap();
 let dragging = null;
 let swapFlashObject = null;
 const cursorState = new ModifierState({
@@ -121,11 +127,17 @@ function updateCursorIndicator() {
 function resetCursorIndicator({ remove = false } = {}) {
   cursorState.reset();
   viewControlsSuppression.restore();
+  clearLandmarkSymmetryPreview();
 
   if (previewSphere) {
     previewSphere.removeFromParent();
     disposeObject3D(previewSphere);
     previewSphere = null;
+  }
+  if (symmetricPlacePreviewSphere) {
+    symmetricPlacePreviewSphere.removeFromParent();
+    disposeObject3D(symmetricPlacePreviewSphere);
+    symmetricPlacePreviewSphere = null;
   }
   if (hoveredLandmarkIndex >= 0) {
     restoreMarkerColor(hoveredLandmarkIndex);
@@ -137,6 +149,7 @@ function resetCursorIndicator({ remove = false } = {}) {
 
 function clearAltPreview() {
   if (previewSphere) previewSphere.visible = false;
+  if (symmetricPlacePreviewSphere) symmetricPlacePreviewSphere.visible = false;
 
   if (hoveredLandmarkIndex >= 0) {
     restoreMarkerColor(hoveredLandmarkIndex);
@@ -161,8 +174,10 @@ function syncCursorFromEvent(event) {
       previewSphere.position.copy(snap.position);
       previewSphere.scale.setScalar(radius);
       previewSphere.visible = true;
-    } else if (previewSphere) {
-      previewSphere.visible = false;
+      updateSymmetricPlacePreview(snap);
+    } else {
+      if (previewSphere) previewSphere.visible = false;
+      if (symmetricPlacePreviewSphere) symmetricPlacePreviewSphere.visible = false;
     }
 
     const newHover = landmarkIndexFromEvent(event);
@@ -183,6 +198,8 @@ function syncCursorModifiersFromKeyEvent(event) {
 
   if (!cursorState.alt || !cursorState.inViewport) {
     clearAltPreview();
+  } else {
+    refreshSymmetricPlacePreviewFromCursor();
   }
 
   updateCursorIndicator();
@@ -348,12 +365,15 @@ function createLabelSprite(text, position, color) {
 }
 
 function rebuildMarkers() {
+  clearLandmarkSymmetryPreview();
   const group = ensureMarkers();
   group.children.forEach(disposeObject3D);
   group.clear();
   swapFlashObject = null;
   // re-adding preview sphere after clear
   previewSphere = null;
+  symmetryPreviewGroup = null;
+  symmetricPlacePreviewSphere = null;
 
   landmarks.forEach((landmark, index) => {
     const isSelected = index === selectedIndex;
@@ -396,6 +416,24 @@ function createPreviewSphere() {
   return sphere;
 }
 
+function createSymmetricPlacePreviewSphere() {
+  const sphere = new THREE.Mesh(
+    new THREE.SphereGeometry(1, 16, 12),
+    new THREE.MeshBasicMaterial({
+      color: 0xffffff,
+      transparent: true,
+      opacity: 0.82,
+      depthTest: true,
+      depthWrite: false,
+      toneMapped: false,
+    })
+  );
+  sphere.renderOrder = 10003;
+  sphere.frustumCulled = false;
+  sphere.name = 'symmetric-place-preview-sphere';
+  return sphere;
+}
+
 function findMarkerSphere(index) {
   const group = ensureMarkers();
   for (const child of group.children) {
@@ -417,6 +455,44 @@ function restoreMarkerColor(index) {
   const isLastCreated = landmarks[index]?.createdAt === Math.max(...landmarks.map(l => l.createdAt));
   const color = isSelected ? COLORS.selected : (isLastCreated ? COLORS.last : COLORS.default);
   setMarkerColor(index, color);
+}
+
+function clearLandmarkSymmetryPreview() {
+  symmetryPreviewColoredIndices.forEach(index => restoreMarkerColor(index));
+  symmetryPreviewColoredIndices.clear();
+
+  if (symmetryPreviewGroup) {
+    disposeObject3D(symmetryPreviewGroup);
+    symmetryPreviewGroup.removeFromParent();
+    symmetryPreviewGroup = null;
+  }
+}
+
+function ensureLandmarkSymmetryPreviewGroup() {
+  clearLandmarkSymmetryPreview();
+  symmetryPreviewGroup = new THREE.Group();
+  symmetryPreviewGroup.name = 'landmark-symmetry-preview';
+  symmetryPreviewGroup.renderOrder = 10020;
+  ensureMarkers().add(symmetryPreviewGroup);
+  return symmetryPreviewGroup;
+}
+
+function addLandmarkSymmetryPreviewSphere(position) {
+  if (!position) return;
+  const group = symmetryPreviewGroup || ensureLandmarkSymmetryPreviewGroup();
+  const radius = getMarkerRadius();
+  const sphere = makeLandmarkSphere({
+    color: '#ffffff',
+    radius,
+    selected: false,
+    depthTest: true,
+    renderOrder: 10020,
+    userData: { symmetryPreview: true },
+  });
+  sphere.material.transparent = true;
+  sphere.material.opacity = 0.82;
+  sphere.position.copy(position);
+  group.add(sphere);
 }
 
 // ── Projection & picking ───────────────────────────────────────────
@@ -631,6 +707,27 @@ function snapFromEvent(event) {
   const hits = raycast(event);
   if (!hits.length) return null;
   return snapFromHit(hits[0], settings.snapMode);
+}
+
+function snapFromCursorState() {
+  if (!cursorState.inViewport || !cursorState.hasPointerPosition) return null;
+
+  const rect = getViewportRect();
+  if (!rect) return null;
+
+  return snapFromEvent({
+    clientX: rect.left + cursorState.x,
+    clientY: rect.top + cursorState.y,
+  });
+}
+
+function refreshSymmetricPlacePreviewFromCursor() {
+  if (!active || !cursorState.alt || !cursorState.inViewport) {
+    if (symmetricPlacePreviewSphere) symmetricPlacePreviewSphere.visible = false;
+    return;
+  }
+
+  updateSymmetricPlacePreview(snapFromCursorState());
 }
 
 // (Rest of the file – import/export, UI controls, … – unchanged until we reach the new parts)
@@ -901,6 +998,494 @@ function refreshLandmarksForCurrentMesh() {
   return changed;
 }
 
+function landmarkSymmetryStatus() {
+  const currentMeshes = getCurrentMeshes();
+  if (currentMeshes.length !== 1) {
+    return {
+      canUse: false,
+      mesh: null,
+      reason: 'Symmetry tools are available when exactly one mesh is loaded.',
+    };
+  }
+
+  const mesh = currentMeshes[0];
+  const mapping = getSymmetryMapping(mesh);
+  if (!mapping) {
+    return {
+      canUse: false,
+      mesh,
+      reason: 'Load a vertex symmetry mapping to enable symmetry tools.',
+    };
+  }
+
+  return { canUse: true, mesh, reason: '', mapping };
+}
+
+function requireSymmetryMesh() {
+  const status = landmarkSymmetryStatus();
+  if (!status.canUse) throw new Error(status.reason);
+  return status.mesh;
+}
+
+function anchorVertexIndices(landmark) {
+  const binding = landmark?.binding || {};
+  const type = binding.snapMode || landmark?.snapMode;
+
+  if (type === 'vertex' && Number.isInteger(binding.vertexIndex)) {
+    return [binding.vertexIndex];
+  }
+
+  if ((type === 'edge' || type === 'triangle') && Array.isArray(binding.vertexIndices)) {
+    const count = type === 'edge' ? 2 : 3;
+    return binding.vertexIndices
+      .slice(0, count)
+      .map(toInteger)
+      .filter(index => index !== null);
+  }
+
+  return [];
+}
+
+function landmarkPlaneSide(mesh, landmark, plane) {
+  if (!mesh || !landmark?.position || !plane?.point || !plane?.normal) return 0;
+
+  const local = mesh.worldToLocal
+    ? mesh.worldToLocal(landmark.position.clone())
+    : landmark.position.clone();
+  const point = new THREE.Vector3(...plane.point);
+  const normal = new THREE.Vector3(...plane.normal);
+  const distance = local.sub(point).dot(normal);
+
+  if (Math.abs(distance) <= 1e-10) return 0;
+  return distance > 0 ? 1 : -1;
+}
+
+function landmarkIsOnSymmetrySourceSide(mesh, landmark, action) {
+  if (action === 'mirror') return true;
+
+  const pairs = symmetryPairs(mesh);
+  const copies = action === 'right-to-left' ? pairs.rightToLeft : pairs.leftToRight;
+  const sourceVertices = new Set(copies.map(({ source }) => source));
+  const targetVertices = new Set(copies.map(({ target }) => target));
+  const indices = anchorVertexIndices(landmark);
+  let sourceHits = 0;
+  let targetHits = 0;
+
+  indices.forEach(index => {
+    if (sourceVertices.has(index)) sourceHits += 1;
+    if (targetVertices.has(index)) targetHits += 1;
+  });
+
+  if (sourceHits !== targetHits) return sourceHits > targetHits;
+
+  const side = landmarkPlaneSide(mesh, landmark, pairs.plane);
+  if (!side) return false;
+  return action === 'right-to-left' ? side < 0 : side > 0;
+}
+
+function oppositeSymmetryAction(action) {
+  if (action === 'left-to-right') return 'right-to-left';
+  if (action === 'right-to-left') return 'left-to-right';
+  return action;
+}
+
+function landmarkIsOnSymmetryTargetSide(mesh, landmark, action) {
+  if (action === 'mirror') return false;
+  return landmarkIsOnSymmetrySourceSide(mesh, landmark, oppositeSymmetryAction(action));
+}
+
+function mappedVertexIndex(mapping, value) {
+  const index = toInteger(value);
+  if (index === null || index < 0 || index >= mapping.length) return null;
+  const mapped = mapping[index];
+  return Number.isInteger(mapped) && mapped >= 0 && mapped < mapping.length ? mapped : null;
+}
+
+function mappedVertexIndices(mapping, values, count) {
+  if (!Array.isArray(values) || values.length < count) return null;
+  const mapped = values.slice(0, count).map(value => mappedVertexIndex(mapping, value));
+  return mapped.every(index => index !== null) ? mapped : null;
+}
+
+function edgeKey(a, b) {
+  return a < b ? `${a}:${b}` : `${b}:${a}`;
+}
+
+function canonicalFacesForMesh(mesh) {
+  const canonical = getCanonicalData(mesh);
+  if (canonical?.faces?.length) return canonical.faces;
+
+  const geometry = mesh?.geometry;
+  const position = getCanonicalPositionAttribute(mesh);
+  if (!geometry || !position) return new Uint32Array();
+
+  const sourceCount = geometry.index ? geometry.index.count : (geometry.attributes.position?.count || 0);
+  const faceCount = Math.floor(sourceCount / 3);
+  const faces = new Uint32Array(faceCount * 3);
+
+  for (let i = 0; i < faces.length; i++) {
+    const renderIndex = geometry.index ? geometry.index.getX(i) : i;
+    const canonicalIndex = renderVertexToCanonical(mesh, renderIndex);
+    faces[i] = canonicalIndex >= 0 && canonicalIndex < position.count ? canonicalIndex : 0;
+  }
+
+  return faces;
+}
+
+function topologyForMesh(mesh) {
+  const cached = meshTopologyCache.get(mesh);
+  if (cached) return cached;
+
+  const faces = canonicalFacesForMesh(mesh);
+  const edges = new Set();
+  const edgeFaces = new Map();
+  const faceCount = Math.floor(faces.length / 3);
+
+  for (let faceIndex = 0; faceIndex < faceCount; faceIndex++) {
+    const tri = [
+      faces[faceIndex * 3],
+      faces[faceIndex * 3 + 1],
+      faces[faceIndex * 3 + 2],
+    ];
+
+    [[0, 1], [1, 2], [2, 0]].forEach(([ia, ib]) => {
+      const key = edgeKey(tri[ia], tri[ib]);
+      edges.add(key);
+      if (!edgeFaces.has(key)) edgeFaces.set(key, []);
+      edgeFaces.get(key).push(faceIndex);
+    });
+  }
+
+  const topology = { faces, edges, edgeFaces };
+  meshTopologyCache.set(mesh, topology);
+  return topology;
+}
+
+function triangleVertexIndicesFromFace(mesh, faceIndex) {
+  const index = toInteger(faceIndex);
+  const topology = topologyForMesh(mesh);
+  if (index === null || index < 0 || index * 3 + 2 >= topology.faces.length) return null;
+
+  return [
+    topology.faces[index * 3],
+    topology.faces[index * 3 + 1],
+    topology.faces[index * 3 + 2],
+  ];
+}
+
+function triangleContainingEdge(mesh, edgeVertexIndices, preferredFaceIndex = null) {
+  if (!Array.isArray(edgeVertexIndices) || edgeVertexIndices.length < 2) return null;
+
+  const a = toInteger(edgeVertexIndices[0]);
+  const b = toInteger(edgeVertexIndices[1]);
+  if (a === null || b === null) return null;
+
+  const preferred = triangleVertexIndicesFromFace(mesh, preferredFaceIndex);
+  if (preferred?.includes(a) && preferred.includes(b)) return preferred;
+
+  const topology = topologyForMesh(mesh);
+  const faceIndex = topology.edgeFaces.get(edgeKey(a, b))?.[0];
+  return triangleVertexIndicesFromFace(mesh, faceIndex);
+}
+
+function mappedTriangleSnapFromEdge(mesh, binding, mapping, mappedEdgeVertexIndices, t) {
+  const sourceTriangle = triangleContainingEdge(mesh, binding.vertexIndices, binding.faceIndex);
+  if (!sourceTriangle) return null;
+
+  const mappedTriangle = mappedVertexIndices(mapping, sourceTriangle, 3);
+  if (!mappedTriangle) return null;
+
+  const edgeA = mappedEdgeVertexIndices[0];
+  const edgeB = mappedEdgeVertexIndices[1];
+  const edgeAPos = mappedTriangle.indexOf(edgeA);
+  const edgeBPos = mappedTriangle.indexOf(edgeB);
+  if (edgeAPos < 0 || edgeBPos < 0) return null;
+
+  const weights = [0, 0, 0];
+  weights[edgeAPos] = 1 - t;
+  weights[edgeBPos] = t;
+
+  return {
+    snapMode: 'triangle',
+    meshUuid: mesh.uuid,
+    meshName: getMeshLabel(mesh),
+    faceIndex: null,
+    localPosition: null,
+    vertexIndices: mappedTriangle,
+    barycentric: {
+      a: roundExportNumber(weights[0]),
+      b: roundExportNumber(weights[1]),
+      c: roundExportNumber(weights[2]),
+    },
+  };
+}
+
+function mappedLandmarkSnap(mesh, landmark, mapping) {
+  const binding = landmark?.binding || {};
+  const type = binding.snapMode || landmark?.snapMode;
+  const snap = {
+    ...cloneBinding(binding),
+    snapMode: type,
+    meshUuid: mesh.uuid,
+    meshName: getMeshLabel(mesh),
+    localPosition: null,
+  };
+
+  if (type === 'vertex') {
+    const vertexIndex = mappedVertexIndex(mapping, binding.vertexIndex);
+    if (vertexIndex === null) return null;
+    snap.vertexIndex = vertexIndex;
+  } else if (type === 'edge') {
+    const vertexIndices = mappedVertexIndices(mapping, binding.vertexIndices, 2);
+    if (!vertexIndices) return null;
+    const t = Number.isFinite(Number(binding.t))
+      ? clamp(Number(binding.t), 0, 1)
+      : clamp(Number(binding.barycentric?.b ?? 0), 0, 1);
+    if (!topologyForMesh(mesh).edges.has(edgeKey(vertexIndices[0], vertexIndices[1]))) {
+      return mappedTriangleSnapFromEdge(mesh, binding, mapping, vertexIndices, t);
+    }
+    snap.vertexIndices = vertexIndices;
+    snap.t = roundExportNumber(t);
+    snap.barycentric = {
+      a: roundExportNumber(1 - t),
+      b: roundExportNumber(t),
+    };
+  } else if (type === 'triangle') {
+    const vertexIndices = mappedVertexIndices(mapping, binding.vertexIndices, 3);
+    if (!vertexIndices) return null;
+    snap.faceIndex = null;
+    snap.vertexIndices = vertexIndices;
+    snap.barycentric = {
+      a: roundExportNumber(Number(binding.barycentric?.a ?? 0)),
+      b: roundExportNumber(Number(binding.barycentric?.b ?? 0)),
+      c: roundExportNumber(Number(binding.barycentric?.c ?? 0)),
+    };
+  } else {
+    return null;
+  }
+
+  return snap;
+}
+
+function transformedLandmarkBySymmetry(mesh, landmark, mapping) {
+  const snap = mappedLandmarkSnap(mesh, landmark, mapping);
+  if (!snap) return null;
+
+  const snapMode = snap.snapMode;
+  const resolved = positionFromImportedSnap(snap, snapMode, landmark.position);
+  if (!resolved?.position || !Number.isFinite(resolved.position.x) || !Number.isFinite(resolved.position.y) || !Number.isFinite(resolved.position.z)) {
+    return null;
+  }
+
+  return {
+    position: resolved.position,
+    snapMode,
+    binding: resolved.binding,
+  };
+}
+
+function landmarkDraftFromSnap(snap) {
+  if (!snap) return null;
+  return {
+    id: 0,
+    createdAt: 0,
+    name: 'Landmark',
+    position: snap.position.clone(),
+    snapMode: snap.snapMode,
+    binding: cloneBinding(snap.binding),
+  };
+}
+
+function isSelfSymmetricVertexPlacement(snap, transformed) {
+  const sourceBinding = snap?.binding || {};
+  const targetBinding = transformed?.binding || {};
+  const sourceType = sourceBinding.snapMode || snap?.snapMode;
+  const targetType = targetBinding.snapMode || transformed?.snapMode;
+
+  return sourceType === 'vertex'
+    && targetType === 'vertex'
+    && Number.isInteger(sourceBinding.vertexIndex)
+    && sourceBinding.vertexIndex === targetBinding.vertexIndex;
+}
+
+function symmetricPlacementForSnap(snap) {
+  if (!settings.placeSymmetric || !snap) return null;
+
+  const status = landmarkSymmetryStatus();
+  if (!status.canUse) return null;
+
+  const draft = landmarkDraftFromSnap(snap);
+  const transformed = transformedLandmarkBySymmetry(status.mesh, draft, status.mapping);
+  if (!transformed || isSelfSymmetricVertexPlacement(snap, transformed)) return null;
+
+  return transformed;
+}
+
+function updateSymmetricPlacePreview(snap) {
+  const transformed = symmetricPlacementForSnap(snap);
+  if (!transformed) {
+    if (symmetricPlacePreviewSphere) symmetricPlacePreviewSphere.visible = false;
+    return;
+  }
+
+  const radius = getMarkerRadius();
+  if (!symmetricPlacePreviewSphere) {
+    symmetricPlacePreviewSphere = createSymmetricPlacePreviewSphere();
+    ensureMarkers().add(symmetricPlacePreviewSphere);
+  }
+
+  symmetricPlacePreviewSphere.position.copy(transformed.position);
+  symmetricPlacePreviewSphere.scale.setScalar(radius);
+  symmetricPlacePreviewSphere.visible = true;
+}
+
+function landmarkSymmetryPlan(mesh, action) {
+  const mapping = getSymmetryMapping(mesh);
+  const transforms = [];
+  const additions = [];
+  const removals = [];
+  let skippedCount = 0;
+
+  if (!mapping) return { transforms, additions, removals, skippedCount };
+
+  landmarks.forEach((landmark, index) => {
+    if (action !== 'mirror' && landmarkIsOnSymmetryTargetSide(mesh, landmark, action)) {
+      removals.push(index);
+    }
+
+    if (!landmarkIsOnSymmetrySourceSide(mesh, landmark, action)) return;
+
+    const transformed = transformedLandmarkBySymmetry(mesh, landmark, mapping);
+    if (!transformed) {
+      skippedCount += 1;
+      return;
+    }
+
+    if (action === 'mirror') {
+      transforms.push({ index, transformed });
+    } else {
+      additions.push({ source: landmark, transformed });
+    }
+  });
+
+  return { transforms, additions, removals, skippedCount };
+}
+
+function makeSymmetricLandmarkCopy(source, transformed) {
+  const id = nextLandmarkId++;
+  return {
+    id,
+    createdAt: id,
+    name: source.name || `Landmark ${id}`,
+    position: transformed.position.clone(),
+    snapMode: transformed.snapMode,
+    binding: cloneBinding(transformed.binding),
+  };
+}
+
+function updateLandmarkSymmetryStatus() {
+  const status = landmarkSymmetryStatus();
+  const section = document.getElementById('landmark-symmetry-section');
+  const placeCheck = document.getElementById('landmark-place-symmetric');
+  const buttons = document.querySelectorAll('[data-landmark-symmetry-action]');
+  const unavailableReason = status.canUse && !landmarks.length
+    ? 'No landmarks to mirror.'
+    : status.reason;
+  const enabled = status.canUse && landmarks.length > 0;
+
+  if (section) section.hidden = !status.canUse;
+
+  if (placeCheck) {
+    placeCheck.checked = settings.placeSymmetric;
+    placeCheck.disabled = !status.canUse;
+    placeCheck.closest('label')?.classList.toggle('is-disabled', !status.canUse);
+    placeCheck.title = status.canUse ? 'Place the mapped symmetric landmark at the same time.' : status.reason;
+  }
+
+  buttons.forEach(button => {
+    button.disabled = !enabled;
+    button.title = enabled ? button.dataset.readyTitle || '' : unavailableReason;
+  });
+}
+
+function previewLandmarkSymmetry(action) {
+  clearLandmarkSymmetryPreview();
+
+  let mesh;
+  try {
+    mesh = requireSymmetryMesh();
+  } catch {
+    return;
+  }
+
+  const plan = landmarkSymmetryPlan(mesh, action);
+  if (!plan.transforms.length && !plan.additions.length && !plan.removals.length) return;
+
+  ensureLandmarkSymmetryPreviewGroup();
+
+  plan.removals.forEach(index => {
+    if (index < 0 || index >= landmarks.length) return;
+    setMarkerColor(index, '#ff0000');
+    symmetryPreviewColoredIndices.add(index);
+  });
+
+  const previewPositions = action === 'mirror'
+    ? plan.transforms.map(({ transformed }) => transformed.position)
+    : plan.additions.map(({ transformed }) => transformed.position);
+  previewPositions.forEach(addLandmarkSymmetryPreviewSphere);
+}
+
+function applyLandmarkSymmetry(action) {
+  let mesh;
+  try {
+    mesh = requireSymmetryMesh();
+  } catch (error) {
+    alert(error?.message || 'Symmetry mapping is not available.');
+    return;
+  }
+
+  if (!landmarks.length) return;
+
+  const plan = landmarkSymmetryPlan(mesh, action);
+  clearLandmarkSymmetryPreview();
+
+  if (action !== 'mirror' && !plan.additions.length && !plan.removals.length) {
+    renderList();
+    return;
+  }
+
+  const changed = commit(`landmark symmetry ${action}`, () => {
+    if (action === 'mirror') {
+      plan.transforms.forEach(({ index, transformed }) => {
+        const landmark = landmarks[index];
+        if (!landmark) return;
+
+        landmark.position.copy(transformed.position);
+        landmark.snapMode = transformed.snapMode;
+        landmark.binding = transformed.binding;
+      });
+      return;
+    }
+
+    const removalSet = new Set(plan.removals);
+    landmarks = landmarks.filter((_, index) => !removalSet.has(index));
+    plan.additions.forEach(({ source, transformed }) => {
+      landmarks.push(makeSymmetricLandmarkCopy(source, transformed));
+    });
+    selectedIndex = -1;
+  });
+
+  updateLandmarkSymmetryStatus();
+
+  if (action === 'mirror' && !plan.transforms.length) {
+    renderList();
+  } else if (action === 'mirror' && plan.skippedCount > 0) {
+    alert(`Skipped ${plan.skippedCount} unanchored or invalid landmark${plan.skippedCount === 1 ? '' : 's'}.`);
+  } else if (!changed) {
+    renderList();
+  }
+}
+
 function importJSONFile(file) {
   if (!file) return;
 
@@ -962,9 +1547,14 @@ function addLandmarkFromEvent(event) {
   const snap = snapFromEvent(event);
   if (!snap) return false;
 
+  const symmetric = symmetricPlacementForSnap(snap);
+
   return commit('add landmark', () => {
     const landmark = makeLandmarkFromSnap(snap);
     landmarks.push(landmark);
+    if (symmetric) {
+      landmarks.push(makeSymmetricLandmarkCopy(landmark, symmetric));
+    }
     selectedIndex = -1;
   });
 }
@@ -2047,6 +2637,7 @@ function renderList() {
         <small>Use T / V / E to change snap mode.</small>
       </div>`;
     updateLandmarkIoStatus();
+    updateLandmarkSymmetryStatus();
     return;
   }
 
@@ -2123,9 +2714,12 @@ function renderList() {
   });
 
   updateLandmarkIoStatus();
+  updateLandmarkSymmetryStatus();
 }
 
 function renderPanel() {
+  const symmetryStatus = landmarkSymmetryStatus();
+
   app.dom.taskContent.innerHTML = `
     <div class="task-heading">
       <h3>Landmark Picking</h3>
@@ -2150,6 +2744,16 @@ function renderPanel() {
       <span class="range-val" id="landmark-scale-val">${landmarkScale.toFixed(2)}</span>
     </div>
 
+    ${symmetryStatus.canUse ? `
+    <div id="landmark-symmetry-section">
+      <div class="section-title">Symmetry</div>
+      <label class="checkbox-label"><input type="checkbox" id="landmark-place-symmetric" ${settings.placeSymmetric ? 'checked' : ''}> Place symmetric landmarks</label>
+      <div class="task-edit-compact landmark-symmetry-actions">
+        <button class="btn btn-mini" data-landmark-symmetry-action="left-to-right" data-ready-title="Mirror source-side landmark anchors through the mapping.">L -> R</button>
+        <button class="btn btn-mini" data-landmark-symmetry-action="right-to-left" data-ready-title="Mirror opposite-side landmark anchors back through the mapping.">R -> L</button>
+        <button class="btn btn-mini" data-landmark-symmetry-action="mirror" data-ready-title="Permute every landmark anchor through the mapping.">Mirror</button>
+      </div>
+    </div>` : ''}
 
     <div class="section-title">Landmarks</div>
     <div id="pick-list" class="pick-list landmark-list"></div>
@@ -2187,6 +2791,30 @@ function renderPanel() {
     importLandmarkFile(importInput.files?.[0]);
   });
   document.getElementById('btn-json')?.addEventListener('click', openLandmarkSaveDialog);
+
+  document.getElementById('landmark-place-symmetric')?.addEventListener('change', event => {
+    settings.placeSymmetric = !!event.target.checked;
+    if (!settings.placeSymmetric) {
+      if (symmetricPlacePreviewSphere) symmetricPlacePreviewSphere.visible = false;
+    } else {
+      refreshSymmetricPlacePreviewFromCursor();
+    }
+    updateLandmarkSymmetryStatus();
+  });
+
+  document.querySelectorAll('[data-landmark-symmetry-action]').forEach(button => {
+    const action = button.getAttribute('data-landmark-symmetry-action');
+    button.addEventListener('pointerenter', () => previewLandmarkSymmetry(action));
+    button.addEventListener('pointerover', () => previewLandmarkSymmetry(action));
+    button.addEventListener('mouseover', () => previewLandmarkSymmetry(action));
+    button.addEventListener('pointermove', () => previewLandmarkSymmetry(action));
+    button.addEventListener('mouseenter', () => previewLandmarkSymmetry(action));
+    button.addEventListener('focus', () => previewLandmarkSymmetry(action));
+    button.addEventListener('pointerleave', clearLandmarkSymmetryPreview);
+    button.addEventListener('mouseleave', clearLandmarkSymmetryPreview);
+    button.addEventListener('blur', clearLandmarkSymmetryPreview);
+    button.addEventListener('click', () => applyLandmarkSymmetry(action));
+  });
 
   // Landmark scale slider
   const scaleSlider = document.getElementById('landmark-scale');
@@ -2247,6 +2875,17 @@ export const landmarkPickingTask = {
     refreshLandmarksForCurrentMesh();
     selectedIndex = -1;
     nextLandmarkId = Math.max(nextLandmarkId, Math.max(0, ...landmarks.map(landmark => landmark.id)) + 1);
+    rebuildMarkers();
+    renderList();
+  },
+
+  onSymmetryChanged() {
+    if (active) renderPanel();
+  },
+
+  onGeometryChanged() {
+    if (!active) return;
+    refreshLandmarksForCurrentMesh();
     rebuildMarkers();
     renderList();
   },
