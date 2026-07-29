@@ -218,7 +218,7 @@ function isTextInputTarget(target) {
 }
 
 function safeName(index) {
-  return `Landmark ${index + 1}`;
+  return `Landmark ${index}`;
 }
 
 // ── Landmark creation / serialisation ─────────────────────────────
@@ -228,7 +228,7 @@ function makeLandmarkFromSnap(snap) {
   return {
     id,
     createdAt: id,
-    name: `Landmark ${id}`,
+    name: safeName(landmarks.length),
     position: snap.position.clone(),
     snapMode: snap.snapMode,
     binding: snap.binding,
@@ -255,7 +255,7 @@ function deserializeLandmark(data) {
   return {
     id: data.id,
     createdAt: data.createdAt ?? data.id,
-    name: data.name || `Landmark ${data.id}`,
+    name: data.name || safeName(Math.max(0, Number(data.id || 1) - 1)),
     position: new THREE.Vector3().fromArray(data.position || [0, 0, 0]),
     snapMode: data.snapMode || 'triangle',
     binding: cloneBinding(data.binding),
@@ -359,7 +359,7 @@ function createLabelSprite(text, position, color) {
     color,
     radius: getMarkerRadius(),
     labelScale,
-    depthTest: true,
+    depthTest: false,
     renderOrder: 10002,
   });
 }
@@ -392,7 +392,7 @@ function rebuildMarkers() {
 
     sphere.position.copy(landmark.position);
     group.add(sphere);
-    group.add(createLabelSprite(String(index + 1), landmark.position, color));
+    group.add(createLabelSprite(String(index), landmark.position, color));
   });
 }
 
@@ -1998,7 +1998,7 @@ function makeVertexLandmark(index, vertexIndex, mesh) {
   return {
     id: nextLandmarkId + index,
     createdAt: nextLandmarkId + index,
-    name: `Landmark ${index + 1}`,
+    name: safeName(index),
     position,
     snapMode: 'vertex',
     binding: bindingFromImportedSnap(
@@ -2110,7 +2110,7 @@ function landmarkPayloadFromVertexBaryArrays(verticesArray, baryArray, sourceNam
 
     imported.push({
       id: imported.length + 1,
-      name: `Landmark ${imported.length + 1}`,
+      name: safeName(imported.length),
       snapMode: snap.type,
       worldPosition: {
         x: roundExportNumber(world.x),
@@ -2202,7 +2202,7 @@ function landmarkPayloadFromArrays(arrays) {
     imported.push({
       index: i,
       id: i + 1,
-      name: `Landmark ${i + 1}`,
+      name: safeName(i),
       snapMode: snap.type,
       worldPosition: { x: position.x, y: position.y, z: position.z },
       snap,
@@ -2654,7 +2654,7 @@ function renderList() {
     return `
       <div class="${classes}" data-idx="${index}" draggable="true">
         <span class="drag-handle" title="Drag to reorder">⋮⋮</span>
-        <span class="idx" title="Landmark order">#${index + 1}</span>
+        <span class="idx" title="Landmark order">#${index}</span>
         <input class="landmark-name" data-idx="${index}" value="${escapeHtml(landmark.name)}" title="Landmark name">
         <span class="snap-badge" title="Snap mode">${landmark.snapMode[0].toUpperCase()}</span>
         <button class="btn-del" data-idx="${index}" title="Delete landmark">✕</button>
