@@ -19,6 +19,17 @@ npm install
 npm run dev
 ``` 
 
+### Publishing a release
+
+Create releases from a clean default branch with:
+
+```sh
+git commit -m "Release X.X.X"
+npm.cmd run build
+npm version X.X.X
+git push origin HEAD --follow-tags
+```
+
 
 ### Implemented tasks
 - 3D inspection
