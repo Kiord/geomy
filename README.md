@@ -19,6 +19,12 @@ npm install
 npm run dev
 ``` 
 
+Run the unit tests with:
+
+```sh
+npm test
+```
+
 ### Publishing a release
 
 Create releases from a clean default branch with:

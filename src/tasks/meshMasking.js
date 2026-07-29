@@ -57,6 +57,12 @@ import {
   getSymmetryMapping,
   symmetryPairs,
 } from '../io/vertexSymmetry.js';
+import {
+  buildMaskTopology,
+  dilateMaskSelection,
+  erodeMaskSelection,
+  hollowMaskSelection,
+} from './maskMorphology.js';
 import '../css/meshMasking.css';
 
 const TASK_RENDER_OVERRIDE = 'mesh-mask';
@@ -581,28 +587,6 @@ function maskTopologyForMesh(mesh) {
     return cached;
   }
 
-  const neighborSets = Array.from({ length: vertexCount }, () => new Set());
-  const edgeRecords = new Map();
-  const addEdge = (a, b) => {
-    if (
-      !Number.isInteger(a) || !Number.isInteger(b)
-      || a < 0 || b < 0 || a >= vertexCount || b >= vertexCount || a === b
-    ) return;
-
-    neighborSets[a].add(b);
-    neighborSets[b].add(a);
-
-    const edgeA = Math.min(a, b);
-    const edgeB = Math.max(a, b);
-    const key = `${edgeA}:${edgeB}`;
-    const record = edgeRecords.get(key);
-    if (record) {
-      record.faceCount += 1;
-    } else {
-      edgeRecords.set(key, { a: edgeA, b: edgeB, faceCount: 1 });
-    }
-  };
-
   const faceIndexCount = faces
     ? faces.length
     : (index ? index.count : (geometry.attributes.position?.count || 0));
@@ -610,24 +594,13 @@ function maskTopologyForMesh(mesh) {
   const vertexAt = faces
     ? offset => Number(faces[offset])
     : offset => renderVertexToCanonical(mesh, index ? index.getX(offset) : offset);
+  const triangleIndices = new Array(triangleCount * 3);
 
-  for (let triangle = 0; triangle < triangleCount; triangle++) {
-    const offset = triangle * 3;
-    const a = vertexAt(offset);
-    const b = vertexAt(offset + 1);
-    const c = vertexAt(offset + 2);
-    addEdge(a, b);
-    addEdge(b, c);
-    addEdge(c, a);
+  for (let offset = 0; offset < triangleIndices.length; offset++) {
+    triangleIndices[offset] = vertexAt(offset);
   }
 
-  const neighbors = neighborSets.map(values => Array.from(values));
-  const boundaryVertices = new Set();
-  edgeRecords.forEach(({ a, b, faceCount }) => {
-    if (faceCount !== 1) return;
-    boundaryVertices.add(a);
-    boundaryVertices.add(b);
-  });
+  const { neighbors, boundaryVertices } = buildMaskTopology(vertexCount, triangleIndices);
 
   const topology = {
     geometry,
@@ -643,19 +616,7 @@ function maskTopologyForMesh(mesh) {
 }
 
 function erodedSelection(mesh, current) {
-  const { neighbors, boundaryVertices } = maskTopologyForMesh(mesh);
-  const eroded = new Set();
-
-  current.forEach(index => {
-    if (
-      !boundaryVertices.has(index)
-      && (neighbors[index] || []).every(neighbor => current.has(neighbor))
-    ) {
-      eroded.add(index);
-    }
-  });
-
-  return eroded;
+  return erodeMaskSelection(current, maskTopologyForMesh(mesh));
 }
 
 function applyPaintSymmetryToMorphology(mesh, action, current, next) {
@@ -687,24 +648,17 @@ function transformedSelection(mesh, action) {
   }
 
   if (action === 'dilate') {
-    const dilated = new Set(current);
-    const { neighbors } = maskTopologyForMesh(mesh);
-    current.forEach(index => {
-      (neighbors[index] || []).forEach(neighbor => dilated.add(neighbor));
-    });
+    const dilated = dilateMaskSelection(current, maskTopologyForMesh(mesh));
     return applyPaintSymmetryToMorphology(mesh, action, current, dilated);
   }
 
-  const eroded = erodedSelection(mesh, current);
   if (action === 'erode') {
+    const eroded = erodedSelection(mesh, current);
     return applyPaintSymmetryToMorphology(mesh, action, current, eroded);
   }
 
   if (action === 'hollow') {
-    const hollowed = new Set();
-    current.forEach(index => {
-      if (!eroded.has(index)) hollowed.add(index);
-    });
+    const hollowed = hollowMaskSelection(current, maskTopologyForMesh(mesh));
     return applyPaintSymmetryToMorphology(mesh, action, current, hollowed);
   }
 
