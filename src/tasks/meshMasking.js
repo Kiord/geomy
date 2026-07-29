@@ -33,12 +33,14 @@ import {
   collectHitVertexIndices as collectHitVertices,
   disposeMaterialOrArray,
   ensureColorAttribute,
+  getCanonicalData,
   getCanonicalVertexCount,
   getCurrentMeshes,
   getMeshLabel,
   getTriangleCount,
   getViewportRect,
   isTextInputTarget,
+  renderVertexToCanonical,
   restoreVisualizationRenderMode as restoreSharedVisualizationRenderMode,
   screenRadiusToWorldRadius,
   setVertexColor,
@@ -79,6 +81,7 @@ let maskLights = [];
 let viewControlsSuppressed = false;
 let viewControlsPreviousEnabled = true;
 let suppressedControls = null;
+let maskEditPreviewAction = null;
 
 let masks = [];
 let activeMaskIndex = 0;
@@ -88,6 +91,7 @@ const visualizationState = new TemporaryVisualizationState();
 const renderBackup = new MeshRenderBackup({ clearPreview });
 const componentIndex = new MeshComponentIndex();
 const history = new HistoryStack({ limit: STACK_LIMIT });
+let maskTopologyCache = new WeakMap();
 
 const cursorState = {
   x: 0,
@@ -553,6 +557,186 @@ function applyMaskValues(mesh, values) {
   getActiveMask().selectedByMesh.set(mesh, selected);
 }
 
+function vertexNeighborsForMesh(mesh) {
+  const geometry = mesh?.geometry;
+  const vertexCount = getCanonicalVertexCount(mesh);
+  if (!geometry || !vertexCount) return [];
+
+  const canonical = getCanonicalData(mesh);
+  const faces = canonical?.faces || null;
+  const index = geometry.index || null;
+  const sourceVertexId = geometry.getAttribute('sourceVertexId') || null;
+  const cached = maskTopologyCache.get(mesh);
+
+  if (
+    cached
+    && cached.geometry === geometry
+    && cached.vertexCount === vertexCount
+    && cached.faces === faces
+    && cached.index === index
+    && cached.sourceVertexId === sourceVertexId
+  ) {
+    return cached.neighbors;
+  }
+
+  const neighborSets = Array.from({ length: vertexCount }, () => new Set());
+  const addEdge = (a, b) => {
+    if (
+      !Number.isInteger(a) || !Number.isInteger(b)
+      || a < 0 || b < 0 || a >= vertexCount || b >= vertexCount || a === b
+    ) return;
+
+    neighborSets[a].add(b);
+    neighborSets[b].add(a);
+  };
+
+  const faceIndexCount = faces
+    ? faces.length
+    : (index ? index.count : (geometry.attributes.position?.count || 0));
+  const triangleCount = Math.floor(faceIndexCount / 3);
+  const vertexAt = faces
+    ? offset => Number(faces[offset])
+    : offset => renderVertexToCanonical(mesh, index ? index.getX(offset) : offset);
+
+  for (let triangle = 0; triangle < triangleCount; triangle++) {
+    const offset = triangle * 3;
+    const a = vertexAt(offset);
+    const b = vertexAt(offset + 1);
+    const c = vertexAt(offset + 2);
+    addEdge(a, b);
+    addEdge(b, c);
+    addEdge(c, a);
+  }
+
+  const neighbors = neighborSets.map(values => Array.from(values));
+  maskTopologyCache.set(mesh, {
+    geometry,
+    vertexCount,
+    faces,
+    index,
+    sourceVertexId,
+    neighbors,
+  });
+  return neighbors;
+}
+
+function erodedSelection(mesh, current) {
+  const neighbors = vertexNeighborsForMesh(mesh);
+  const eroded = new Set();
+
+  current.forEach(index => {
+    if ((neighbors[index] || []).every(neighbor => current.has(neighbor))) {
+      eroded.add(index);
+    }
+  });
+
+  return eroded;
+}
+
+function applyPaintSymmetryToMorphology(mesh, action, current, next) {
+  if (!paintSymmetric) return next;
+
+  if (action === 'dilate') {
+    const additions = Array.from(next).filter(index => !current.has(index));
+    expandWithSymmetry(mesh, additions, true).forEach(index => next.add(index));
+    return next;
+  }
+
+  const removals = Array.from(current).filter(index => !next.has(index));
+  expandWithSymmetry(mesh, removals, true).forEach(index => next.delete(index));
+  return next;
+}
+
+function transformedSelection(mesh, action) {
+  const current = getMaskSelection(getActiveMask(), mesh);
+  const vertexCount = getCanonicalVertexCount(mesh);
+
+  if (action === 'clear') return new Set();
+
+  if (action === 'invert') {
+    const inverted = new Set();
+    for (let i = 0; i < vertexCount; i++) {
+      if (!current.has(i)) inverted.add(i);
+    }
+    return inverted;
+  }
+
+  if (action === 'dilate') {
+    const dilated = new Set(current);
+    const neighbors = vertexNeighborsForMesh(mesh);
+    current.forEach(index => {
+      (neighbors[index] || []).forEach(neighbor => dilated.add(neighbor));
+    });
+    return applyPaintSymmetryToMorphology(mesh, action, current, dilated);
+  }
+
+  const eroded = erodedSelection(mesh, current);
+  if (action === 'erode') {
+    return applyPaintSymmetryToMorphology(mesh, action, current, eroded);
+  }
+
+  if (action === 'hollow') {
+    const hollowed = new Set();
+    current.forEach(index => {
+      if (!eroded.has(index)) hollowed.add(index);
+    });
+    return applyPaintSymmetryToMorphology(mesh, action, current, hollowed);
+  }
+
+  return new Set(current);
+}
+
+function previewMaskEdit(action) {
+  clearPreview();
+
+  getCurrentMeshes().forEach(mesh => {
+    const current = getMaskSelection(getActiveMask(), mesh);
+    const next = transformedSelection(mesh, action);
+    const colorAttribute = ensureColorAttribute(mesh);
+    const vertexCount = getCanonicalVertexCount(mesh);
+    if (!colorAttribute || !vertexCount) return;
+
+    const previewed = new Set();
+    for (let i = 0; i < vertexCount; i++) {
+      const wasSelected = current.has(i);
+      const willBeSelected = next.has(i);
+      if (wasSelected === willBeSelected) continue;
+
+      previewed.add(i);
+      setVertexColor(
+        colorAttribute,
+        i,
+        willBeSelected ? PREVIEW_SELECT_COLOR : PREVIEW_UNSELECT_COLOR
+      );
+    }
+
+    if (!previewed.size) return;
+    colorAttribute.needsUpdate = true;
+    previewedVertices.set(mesh, previewed);
+    cursorState.previewCount += previewed.size;
+  });
+}
+
+function beginMaskEditPreview(action) {
+  if (maskEditPreviewAction === action) return;
+  maskEditPreviewAction = action;
+  previewMaskEdit(action);
+}
+
+function endMaskEditPreview(action) {
+  if (maskEditPreviewAction !== action) return;
+  maskEditPreviewAction = null;
+  clearPreview();
+}
+
+function applyMaskEdit(action) {
+  return commit(`${action} mask`, () => {
+    getCurrentMeshes().forEach(mesh => {
+      getActiveMask().selectedByMesh.set(mesh, transformedSelection(mesh, action));
+    });
+  });
+}
+
 function transformedMaskValues(mesh, action) {
   const current = maskValuesForMesh(mesh);
   const mapping = getSymmetryMapping(mesh);
@@ -931,7 +1115,7 @@ function updateCursorIndicator() {
 function refreshCursorHitAndPreview(clientX, clientY, selected = (painting?.selected ?? true), mode = (painting?.mode || getInteractionMode())) {
   if (!mode || !cursorState.inViewport) {
     cursorState.hitPoint = null;
-    clearPreview();
+    if (!maskEditPreviewAction) clearPreview();
     return null;
   }
 
@@ -945,6 +1129,7 @@ function refreshCursorHitAndPreview(clientX, clientY, selected = (painting?.sele
 }
 
 function resetCursorIndicator({ remove = false } = {}) {
+  maskEditPreviewAction = null;
   cursorState.inViewport = false;
   cursorState.alt = false;
   cursorState.shift = false;
@@ -997,7 +1182,7 @@ function syncCursorModifiersFromKeyEvent(event) {
     const rect = getViewportRect();
     refreshCursorHitAndPreview(rect.left + cursorState.x, rect.top + cursorState.y);
   } else {
-    clearPreview();
+    if (!maskEditPreviewAction) clearPreview();
     cursorState.hitPoint = null;
   }
 
@@ -1119,30 +1304,6 @@ function setBrushRadius(value) {
   refreshPreviewAtCursor();
   updatePanelStats();
   updateCursorIndicator();
-}
-
-function clearMask() {
-  return commit('clear mask', () => {
-    getCurrentMeshes().forEach(mesh => {
-      ensureMeshState(mesh).selected.clear();
-    });
-  });
-}
-
-function invertMask() {
-  return commit('invert mask', () => {
-    getCurrentMeshes().forEach(mesh => {
-      const state = ensureMeshState(mesh);
-      const vertexCount = getCanonicalVertexCount(mesh);
-      if (!vertexCount) return;
-
-      const next = new Set();
-      for (let i = 0; i < vertexCount; i++) {
-        if (!state.selected.has(i)) next.add(i);
-      }
-      getActiveMask().selectedByMesh.set(mesh, next);
-    });
-  });
 }
 
 function meshStats(mesh, meshIndex) {
@@ -2047,6 +2208,8 @@ function updateMaskListState() {
 }
 
 function renderPanel() {
+  maskEditPreviewAction = null;
+  clearPreview();
   ensureDefaultMask();
   const symmetryStatus = symmetryMeshStatus();
 
@@ -2058,8 +2221,13 @@ function renderPanel() {
 
     <div class="section-title">Edit Active Mask</div>
     <div class="task-edit-compact">
-      <button id="btn-mesh-mask-clear" class="btn btn-danger">Clear</button>
-      <button id="btn-mesh-mask-invert" class="btn">Invert</button>
+      <button id="btn-mesh-mask-clear" class="btn btn-danger" data-mesh-mask-edit-action="clear" title="Clear every selected vertex.">Clear</button>
+      <button id="btn-mesh-mask-invert" class="btn" data-mesh-mask-edit-action="invert" title="Swap selected and unselected vertices.">Invert</button>
+    </div>
+    <div class="task-edit-compact">
+      <button id="btn-mesh-mask-dilate" class="btn" data-mesh-mask-edit-action="dilate" title="Expand the mask by one mesh edge.">Dilate</button>
+      <button id="btn-mesh-mask-erode" class="btn" data-mesh-mask-edit-action="erode" title="Shrink the mask by one mesh edge.">Erode</button>
+      <button id="btn-mesh-mask-hollow" class="btn" data-mesh-mask-edit-action="hollow" title="Keep the current mask minus its eroded interior.">Hollow</button>
     </div>
 
     <div class="section-title">Brush Width (screen)</div>
@@ -2133,10 +2301,25 @@ function renderPanel() {
   });
 
   document.getElementById('btn-mesh-mask-add')?.addEventListener('click', addMask);
-  document.getElementById('btn-mesh-mask-clear')?.addEventListener('click', () => {
-    if (getSelectedCount() === 0 || window.confirm('Clear the active mask?')) clearMask();
+  document.querySelectorAll('[data-mesh-mask-edit-action]').forEach(button => {
+    const action = button.getAttribute('data-mesh-mask-edit-action');
+    button.addEventListener('pointerenter', () => beginMaskEditPreview(action));
+    button.addEventListener('mouseenter', () => beginMaskEditPreview(action));
+    button.addEventListener('focus', () => beginMaskEditPreview(action));
+    button.addEventListener('pointerleave', () => endMaskEditPreview(action));
+    button.addEventListener('mouseleave', () => endMaskEditPreview(action));
+    button.addEventListener('blur', () => endMaskEditPreview(action));
+    button.addEventListener('click', () => {
+      if (
+        action !== 'clear'
+        || getSelectedCount() === 0
+        || window.confirm('Clear the active mask?')
+      ) {
+        applyMaskEdit(action);
+        if (maskEditPreviewAction === action) previewMaskEdit(action);
+      }
+    });
   });
-  document.getElementById('btn-mesh-mask-invert')?.addEventListener('click', invertMask);
   document.getElementById('btn-mesh-mask-export')?.addEventListener('click', openMaskSaveDialog);
 
   const importInput = document.getElementById('mesh-mask-import-file');
@@ -2152,6 +2335,7 @@ function resetForNewFile() {
   clearPreview();
   restoreRenderBackup({ disposeOriginals: true });
   componentIndex.reset();
+  maskTopologyCache = new WeakMap();
   masks = [];
   activeMaskIndex = 0;
   nextMaskId = 1;
@@ -2208,6 +2392,7 @@ export const meshMaskingTask = {
   },
 
   onGeometryChanged() {
+    maskTopologyCache = new WeakMap();
     if (!active) return;
     updateAllColors();
     updatePanelStats();
