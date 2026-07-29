@@ -12,7 +12,7 @@ import { meshRigidAlignTask } from './tasks/meshRigidAlign.js';
 import { inspectTask } from './tasks/inspect.js';
 import { initVizPanel } from './panels/visualization.js';
 import { initGeometryInspection } from './panels/geometryInspection.js';
-import { GEOMY_COMMIT_SHORT_HASH, GEOMY_COMMIT_URL, GEOMY_VERSION } from './version.js';
+import { GEOMY_RELEASE_URL, GEOMY_VERSION } from './version.js';
 
 function initSidePanelToggles() {
   const topBtn = document.getElementById('toggle-topbar');
@@ -125,34 +125,22 @@ function initVersionBadge() {
 
   badge.textContent = '';
 
-  const version = document.createElement('span');
-  version.textContent = `geomy ${GEOMY_VERSION}`;
-  badge.appendChild(version);
-
-  if (GEOMY_COMMIT_SHORT_HASH) {
-    const separator = document.createElement('span');
-    separator.textContent = ' ';
-    badge.appendChild(separator);
-
-    const commitLabel = `@${GEOMY_COMMIT_SHORT_HASH}`;
-    if (GEOMY_COMMIT_URL) {
-      const link = document.createElement('a');
-      link.href = GEOMY_COMMIT_URL;
-      link.target = '_blank';
-      link.rel = 'noopener noreferrer';
-      link.textContent = commitLabel;
-      link.title = `Open commit ${GEOMY_COMMIT_SHORT_HASH} on GitHub`;
-      badge.appendChild(link);
-    } else {
-      const hash = document.createElement('span');
-      hash.textContent = commitLabel;
-      badge.appendChild(hash);
-    }
+  const label = `geomy ${GEOMY_VERSION}`;
+  if (GEOMY_RELEASE_URL) {
+    const link = document.createElement('a');
+    link.href = GEOMY_RELEASE_URL;
+    link.target = '_blank';
+    link.rel = 'noopener noreferrer';
+    link.textContent = label;
+    link.title = `Open Geomy v${GEOMY_VERSION} release on GitHub`;
+    badge.appendChild(link);
+  } else {
+    badge.textContent = label;
   }
 
-  badge.title = GEOMY_COMMIT_SHORT_HASH
-    ? `geomy ${GEOMY_VERSION} ${GEOMY_COMMIT_SHORT_HASH}`
-    : `geomy ${GEOMY_VERSION}`;
+  badge.title = GEOMY_RELEASE_URL
+    ? `Open Geomy v${GEOMY_VERSION} release on GitHub`
+    : label;
 }
 
 // ── Boot ──

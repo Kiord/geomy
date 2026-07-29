@@ -22,16 +22,14 @@ function githubBaseUrl(remote) {
 }
 
 const pkg = JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf8'));
-const commitHash = git(['rev-parse', 'HEAD']);
-const shortCommitHash = git(['rev-parse', '--short=8', 'HEAD']);
 const githubUrl = githubBaseUrl(git(['config', '--get', 'remote.origin.url']));
-const commitUrl = githubUrl && commitHash ? `${githubUrl}/commit/${commitHash}` : '';
+const releaseUrl = githubUrl && pkg.version
+  ? `${githubUrl}/releases/tag/v${pkg.version}`
+  : '';
 
 export default defineConfig({
   define: {
     __GEOMY_VERSION__: JSON.stringify(pkg.version || ''),
-    __GEOMY_COMMIT_HASH__: JSON.stringify(commitHash),
-    __GEOMY_COMMIT_SHORT_HASH__: JSON.stringify(shortCommitHash),
-    __GEOMY_COMMIT_URL__: JSON.stringify(commitUrl),
+    __GEOMY_RELEASE_URL__: JSON.stringify(releaseUrl),
   },
 });

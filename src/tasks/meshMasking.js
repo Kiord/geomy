@@ -557,10 +557,12 @@ function applyMaskValues(mesh, values) {
   getActiveMask().selectedByMesh.set(mesh, selected);
 }
 
-function vertexNeighborsForMesh(mesh) {
+function maskTopologyForMesh(mesh) {
   const geometry = mesh?.geometry;
   const vertexCount = getCanonicalVertexCount(mesh);
-  if (!geometry || !vertexCount) return [];
+  if (!geometry || !vertexCount) {
+    return { neighbors: [], boundaryVertices: new Set() };
+  }
 
   const canonical = getCanonicalData(mesh);
   const faces = canonical?.faces || null;
@@ -576,10 +578,11 @@ function vertexNeighborsForMesh(mesh) {
     && cached.index === index
     && cached.sourceVertexId === sourceVertexId
   ) {
-    return cached.neighbors;
+    return cached;
   }
 
   const neighborSets = Array.from({ length: vertexCount }, () => new Set());
+  const edgeRecords = new Map();
   const addEdge = (a, b) => {
     if (
       !Number.isInteger(a) || !Number.isInteger(b)
@@ -588,6 +591,16 @@ function vertexNeighborsForMesh(mesh) {
 
     neighborSets[a].add(b);
     neighborSets[b].add(a);
+
+    const edgeA = Math.min(a, b);
+    const edgeB = Math.max(a, b);
+    const key = `${edgeA}:${edgeB}`;
+    const record = edgeRecords.get(key);
+    if (record) {
+      record.faceCount += 1;
+    } else {
+      edgeRecords.set(key, { a: edgeA, b: edgeB, faceCount: 1 });
+    }
   };
 
   const faceIndexCount = faces
@@ -609,23 +622,35 @@ function vertexNeighborsForMesh(mesh) {
   }
 
   const neighbors = neighborSets.map(values => Array.from(values));
-  maskTopologyCache.set(mesh, {
+  const boundaryVertices = new Set();
+  edgeRecords.forEach(({ a, b, faceCount }) => {
+    if (faceCount !== 1) return;
+    boundaryVertices.add(a);
+    boundaryVertices.add(b);
+  });
+
+  const topology = {
     geometry,
     vertexCount,
     faces,
     index,
     sourceVertexId,
     neighbors,
-  });
-  return neighbors;
+    boundaryVertices,
+  };
+  maskTopologyCache.set(mesh, topology);
+  return topology;
 }
 
 function erodedSelection(mesh, current) {
-  const neighbors = vertexNeighborsForMesh(mesh);
+  const { neighbors, boundaryVertices } = maskTopologyForMesh(mesh);
   const eroded = new Set();
 
   current.forEach(index => {
-    if ((neighbors[index] || []).every(neighbor => current.has(neighbor))) {
+    if (
+      !boundaryVertices.has(index)
+      && (neighbors[index] || []).every(neighbor => current.has(neighbor))
+    ) {
       eroded.add(index);
     }
   });
@@ -663,7 +688,7 @@ function transformedSelection(mesh, action) {
 
   if (action === 'dilate') {
     const dilated = new Set(current);
-    const neighbors = vertexNeighborsForMesh(mesh);
+    const { neighbors } = maskTopologyForMesh(mesh);
     current.forEach(index => {
       (neighbors[index] || []).forEach(neighbor => dilated.add(neighbor));
     });
