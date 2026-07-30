@@ -986,6 +986,25 @@ function addRegion() {
   }, { renderRegions: true });
 }
 
+function moveRegion(fromIndex, toIndex) {
+  if (
+    fromIndex < 0
+    || toIndex < 0
+    || fromIndex >= regions.length
+    || toIndex >= regions.length
+    || fromIndex === toIndex
+  ) {
+    return false;
+  }
+
+  return commit('reorder regions', () => {
+    const active = activeRegion();
+    const [region] = regions.splice(fromIndex, 1);
+    regions.splice(toIndex, 0, region);
+    activeRegionIndex = regions.indexOf(active);
+  }, { renderRegions: true });
+}
+
 function removeRegion(index) {
   if (index < 0 || index >= regions.length) return false;
 
@@ -1243,17 +1262,48 @@ function renderRegionList() {
   if (!list) return;
 
   list.innerHTML = regions.map((region, index) => `
-    <div class="mesh-mask-row mesh-seg-region-row ${index === activeRegionIndex ? 'selected' : ''}" data-idx="${index}">
+    <div class="mesh-mask-row mesh-seg-region-row ${index === activeRegionIndex ? 'selected' : ''}" data-idx="${index}" draggable="true">
+      <span class="drag-handle" title="Drag to reorder">⋮⋮</span>
       <span class="idx">#${index + 1}</span>
       <input class="mesh-seg-region-color" data-idx="${index}" type="color" value="${escapeHtml(region.color)}" title="Region color">
       <input class="mesh-mask-name mesh-seg-region-name" data-idx="${index}" value="${escapeHtml(regionName(region, index))}" title="Region name">
-      <span class="mesh-mask-row-count" data-region-count="${index}">${regionVertexCount(region).toLocaleString()} verts</span>
+      <span class="mesh-mask-row-count" data-region-count="${index}">${regionVertexCount(region).toLocaleString()}</span>
       <button class="btn-mask-delete btn-icon" data-idx="${index}" title="Remove region" aria-label="Remove region">×</button>
     </div>`).join('');
 
   list.querySelectorAll('.mesh-seg-region-row').forEach(row => {
+    const index = parseInt(row.dataset.idx, 10);
+
     row.addEventListener('click', event => {
-      if (!event.target.closest('input,button')) selectRegion(parseInt(row.dataset.idx, 10));
+      if (!event.target.closest('input,button')) selectRegion(index);
+    });
+
+    row.addEventListener('dragstart', event => {
+      event.dataTransfer.effectAllowed = 'move';
+      event.dataTransfer.setData('text/plain', String(index));
+      row.classList.add('dragging');
+    });
+
+    row.addEventListener('dragend', () => {
+      row.classList.remove('dragging');
+      list.querySelectorAll('.drag-over').forEach(element => element.classList.remove('drag-over'));
+    });
+
+    row.addEventListener('dragover', event => {
+      event.preventDefault();
+      event.dataTransfer.dropEffect = 'move';
+      row.classList.add('drag-over');
+    });
+
+    row.addEventListener('dragleave', () => {
+      row.classList.remove('drag-over');
+    });
+
+    row.addEventListener('drop', event => {
+      event.preventDefault();
+      row.classList.remove('drag-over');
+      const fromIndex = parseInt(event.dataTransfer.getData('text/plain'), 10);
+      moveRegion(fromIndex, index);
     });
   });
   list.querySelectorAll('.mesh-seg-region-name').forEach(input => {
@@ -1284,7 +1334,7 @@ function updateRegionListState() {
   });
   list.querySelectorAll('[data-region-count]').forEach(el => {
     const region = regions[parseInt(el.dataset.regionCount, 10)];
-    if (region) el.textContent = `${regionVertexCount(region).toLocaleString()} verts`;
+    if (region) el.textContent = regionVertexCount(region).toLocaleString();
   });
 }
 
