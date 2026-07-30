@@ -63,6 +63,10 @@ import {
   erodeMaskSelection,
   hollowMaskSelection,
 } from './maskMorphology.js';
+import {
+  cloneMaskSelection,
+  combineMaskSelections,
+} from './maskOperations.js';
 import '../css/meshMasking.css';
 
 const TASK_RENDER_OVERRIDE = 'mesh-mask';
@@ -88,6 +92,9 @@ let viewControlsSuppressed = false;
 let viewControlsPreviousEnabled = true;
 let suppressedControls = null;
 let maskEditPreviewAction = null;
+let maskCombinePreviewOperation = null;
+let combineMaskAId = null;
+let combineMaskBId = null;
 
 let masks = [];
 let activeMaskIndex = 0;
@@ -152,6 +159,10 @@ function getMaskSelectedCount(mask = getActiveMask()) {
   ), 0);
 }
 
+function maskListCountLabel(count) {
+  return (Number(count) || 0).toLocaleString();
+}
+
 function maskName(mask, fallbackIndex = 0) {
   const name = String(mask?.name || '').trim();
   return name || `Mask ${fallbackIndex + 1}`;
@@ -162,9 +173,11 @@ function setActiveMaskIndex(index) {
   const nextIndex = clamp(Number(index), 0, masks.length - 1);
   if (!Number.isInteger(nextIndex) || nextIndex === activeMaskIndex) return;
 
+  maskCombinePreviewOperation = null;
   clearPreview();
   activeMaskIndex = nextIndex;
   updateAllColors();
+  updateMaskCombineControls();
   updatePanelStats();
 }
 
@@ -173,6 +186,31 @@ function addMask() {
     const mask = makeMask();
     masks.push(mask);
     activeMaskIndex = masks.length - 1;
+  }, { renderMasks: true });
+}
+
+function uniqueMaskName(baseName) {
+  const existing = new Set(masks.map((mask, index) => maskName(mask, index)));
+  if (!existing.has(baseName)) return baseName;
+
+  let suffix = 2;
+  while (existing.has(`${baseName} ${suffix}`)) suffix += 1;
+  return `${baseName} ${suffix}`;
+}
+
+function duplicateMask(index = activeMaskIndex) {
+  if (index < 0 || index >= masks.length) return false;
+
+  return commit('duplicate mask', () => {
+    const source = masks[index];
+    const duplicate = makeMask(uniqueMaskName(`${maskName(source, index)} copy`));
+
+    getCurrentMeshes().forEach(mesh => {
+      duplicate.selectedByMesh.set(mesh, cloneMaskSelection(getMaskSelection(source, mesh)));
+    });
+
+    masks.splice(index + 1, 0, duplicate);
+    activeMaskIndex = index + 1;
   }, { renderMasks: true });
 }
 
@@ -716,6 +754,109 @@ function applyMaskEdit(action) {
   });
 }
 
+function getCombineMasks() {
+  let leftMask = masks.find(mask => mask.id === combineMaskAId) || masks[0] || null;
+  let rightMask = masks.find(mask => mask.id === combineMaskBId && mask !== leftMask) || null;
+
+  if (!rightMask) {
+    rightMask = masks.find(mask => mask !== leftMask) || null;
+  }
+
+  combineMaskAId = leftMask?.id ?? null;
+  combineMaskBId = rightMask?.id ?? null;
+  return { leftMask, rightMask };
+}
+
+function maskCombinationName(operation, left, right) {
+  const leftName = maskName(left, masks.indexOf(left));
+  const rightName = maskName(right, masks.indexOf(right));
+  const operationName = {
+    union: 'union',
+    intersection: 'intersection',
+    difference: 'minus',
+  }[operation] || operation;
+
+  return uniqueMaskName(`${leftName} ${operationName} ${rightName}`);
+}
+
+function combinedSelectionForMesh(mesh, operation, leftMask, rightMask) {
+  if (!leftMask || !rightMask) return null;
+
+  return combineMaskSelections(
+    getMaskSelection(leftMask, mesh),
+    getMaskSelection(rightMask, mesh),
+    operation,
+  );
+}
+
+function previewMaskCombination(operation) {
+  clearPreview();
+
+  const { leftMask, rightMask } = getCombineMasks();
+  if (!leftMask || !rightMask) {
+    maskCombinePreviewOperation = null;
+    return;
+  }
+
+  maskCombinePreviewOperation = operation;
+
+  getCurrentMeshes().forEach(mesh => {
+    const next = combinedSelectionForMesh(mesh, operation, leftMask, rightMask);
+    const colorAttribute = ensureColorAttribute(mesh);
+    const vertexCount = getCanonicalVertexCount(mesh);
+    if (!next || !colorAttribute || !vertexCount) return;
+
+    const previewed = new Set();
+
+    for (let i = 0; i < vertexCount; i++) {
+      const willBeSelected = next.has(i);
+      previewed.add(i);
+      setVertexColor(
+        colorAttribute,
+        i,
+        willBeSelected ? PREVIEW_SELECT_COLOR : PREVIEW_UNSELECT_COLOR,
+      );
+    }
+
+    if (!previewed.size) return;
+    colorAttribute.needsUpdate = true;
+    previewedVertices.set(mesh, previewed);
+    cursorState.previewCount += previewed.size;
+  });
+}
+
+function endMaskCombinationPreview(operation = null) {
+  if (operation && maskCombinePreviewOperation !== operation) return;
+  maskCombinePreviewOperation = null;
+  clearPreview();
+}
+
+function createCombinedMask(operation) {
+  const { leftMask, rightMask } = getCombineMasks();
+  if (!leftMask || !rightMask) return false;
+
+  maskCombinePreviewOperation = null;
+  return commit(`${operation} masks`, () => {
+    const result = makeMask(maskCombinationName(operation, leftMask, rightMask));
+
+    getCurrentMeshes().forEach(mesh => {
+      result.selectedByMesh.set(
+        mesh,
+        combineMaskSelections(
+          getMaskSelection(leftMask, mesh),
+          getMaskSelection(rightMask, mesh),
+          operation,
+        ),
+      );
+    });
+
+    masks.push(result);
+    activeMaskIndex = masks.length - 1;
+    combineMaskAId = leftMask.id;
+    combineMaskBId = rightMask.id;
+  }, { renderMasks: true });
+}
+
 function transformedMaskValues(mesh, action) {
   const current = maskValuesForMesh(mesh);
   const mapping = getSymmetryMapping(mesh);
@@ -1094,7 +1235,7 @@ function updateCursorIndicator() {
 function refreshCursorHitAndPreview(clientX, clientY, selected = (painting?.selected ?? true), mode = (painting?.mode || getInteractionMode())) {
   if (!mode || !cursorState.inViewport) {
     cursorState.hitPoint = null;
-    if (!maskEditPreviewAction) clearPreview();
+    if (!maskEditPreviewAction && !maskCombinePreviewOperation) clearPreview();
     return null;
   }
 
@@ -1161,7 +1302,7 @@ function syncCursorModifiersFromKeyEvent(event) {
     const rect = getViewportRect();
     refreshCursorHitAndPreview(rect.left + cursorState.x, rect.top + cursorState.y);
   } else {
-    if (!maskEditPreviewAction) clearPreview();
+    if (!maskEditPreviewAction && !maskCombinePreviewOperation) clearPreview();
     cursorState.hitPoint = null;
   }
 
@@ -2030,6 +2171,24 @@ function onKeyDown(event) {
   const key = event.key.toLowerCase();
   const isUndo = (event.ctrlKey || event.metaKey) && !event.shiftKey && key === 'z';
   const isRedo = (event.ctrlKey || event.metaKey) && (key === 'y' || (event.shiftKey && key === 'z'));
+  const isDeleteMask = key === 'delete';
+  const isDuplicateMask = event.shiftKey
+    && !event.ctrlKey
+    && !event.metaKey
+    && !event.altKey
+    && key === 'd';
+
+  if (isDeleteMask) {
+    preventTaskEvent(event);
+    if (!event.repeat) removeMask(activeMaskIndex);
+    return;
+  }
+
+  if (isDuplicateMask) {
+    preventTaskEvent(event);
+    if (!event.repeat) duplicateMask(activeMaskIndex);
+    return;
+  }
 
   if (isUndo) {
     preventTaskEvent(event);
@@ -2110,7 +2269,7 @@ function renderMaskList() {
         <span class="drag-handle" title="Drag to reorder">⋮⋮</span>
         <span class="idx" title="Mask order">#${index + 1}</span>
         <input class="mesh-mask-name" data-idx="${index}" value="${escapeHtml(maskName(mask, index))}" title="Mask name">
-        <span class="mesh-mask-row-count" data-mask-count="${index}">${selected.toLocaleString()} selected</span>
+        <span class="mesh-mask-row-count" data-mask-count="${index}" title="${selected.toLocaleString()} selected">${maskListCountLabel(selected)}</span>
         <button class="btn-mask-delete btn-icon" data-idx="${index}" title="Remove mask" aria-label="Remove mask">×</button>
       </div>`;
   }).join('');
@@ -2167,6 +2326,7 @@ function renderMaskList() {
   });
 
   updateMaskListState();
+  updateMaskCombineControls();
 }
 
 function updateMaskListState() {
@@ -2182,12 +2342,50 @@ function updateMaskListState() {
     const index = parseInt(el.dataset.maskCount, 10);
     const mask = masks[index];
     if (!mask) return;
-    el.textContent = `${getMaskSelectedCount(mask).toLocaleString()} selected`;
+    const selected = getMaskSelectedCount(mask);
+    el.textContent = maskListCountLabel(selected);
+    el.title = `${selected.toLocaleString()} selected`;
+  });
+}
+
+function updateMaskCombineControls() {
+  const selectA = document.getElementById('mesh-mask-combine-a');
+  const selectB = document.getElementById('mesh-mask-combine-b');
+  const buttons = document.querySelectorAll('[data-mesh-mask-combine-operation]');
+  const duplicateButton = document.getElementById('btn-mesh-mask-duplicate');
+  const activeMask = getActiveMask();
+
+  if (duplicateButton) duplicateButton.disabled = !activeMask;
+
+  const { leftMask, rightMask } = getCombineMasks();
+  const options = masks.length
+    ? masks.map((mask, index) => (
+        `<option value="${mask.id}">${escapeHtml(maskName(mask, index))}</option>`
+      )).join('')
+    : '<option value="">---</option>';
+
+  if (selectA) {
+    selectA.innerHTML = options;
+    selectA.disabled = masks.length < 2;
+    selectA.value = leftMask ? String(leftMask.id) : '';
+  }
+
+  if (selectB) {
+    selectB.innerHTML = masks.length > 1
+      ? options
+      : '<option value="">---</option>';
+    selectB.disabled = masks.length < 2;
+    selectB.value = rightMask ? String(rightMask.id) : '';
+  }
+
+  buttons.forEach(button => {
+    button.disabled = !leftMask || !rightMask;
   });
 }
 
 function renderPanel() {
   maskEditPreviewAction = null;
+  maskCombinePreviewOperation = null;
   clearPreview();
   ensureDefaultMask();
   const symmetryStatus = symmetryMeshStatus();
@@ -2195,7 +2393,7 @@ function renderPanel() {
   app.dom.taskContent.innerHTML = `
     <div class="task-heading">
       <h3>Mesh Masking</h3>
-      <span class="task-help" tabindex="0" data-tip="This task uses a Lambert vertex-color view. Hold Alt to paint: left-drag selects, right-drag unselects. Hold Shift for connected components. Alt+wheel changes brush width. Enable geodesic brush to precompute an all-pairs distance LUT; painting switches to geodesic as soon as the LUT is ready. Ctrl+Z/Y undo/redo.">?</span>
+      <span class="task-help" tabindex="0" data-tip="This task uses a Lambert vertex-color view. Hold Alt to paint: left-drag selects, right-drag unselects. Hold Shift for connected components. Alt+wheel changes brush width. Delete removes the active mask; Shift+D duplicates it. Enable geodesic brush to precompute an all-pairs distance LUT; painting switches to geodesic as soon as the LUT is ready. Ctrl+Z/Y undo/redo.">?</span>
     </div>
 
     <div class="section-title">Edit Active Mask</div>
@@ -2231,9 +2429,25 @@ function renderPanel() {
 
     <div class="section-title">Masks</div>
     <div class="btn-row mesh-mask-io-row">
-      <button id="btn-mesh-mask-add" class="btn">＋ Add Mask</button>
+      <button id="btn-mesh-mask-add" class="btn">New Empty</button>
+      <button id="btn-mesh-mask-duplicate" class="btn" title="Create an independent copy of the active mask.">Duplicate</button>
     </div>
     <div id="mesh-mask-list" class="mesh-mask-list"></div>
+
+    <div class="section-title">Combine Masks</div>
+    <div class="mesh-mask-combine">
+      <div class="mesh-mask-combine-expression">
+        <label for="mesh-mask-combine-a">A</label>
+        <select id="mesh-mask-combine-a"></select>
+        <label for="mesh-mask-combine-b">B</label>
+        <select id="mesh-mask-combine-b"></select>
+      </div>
+      <div class="task-edit-compact">
+        <button class="btn" data-mesh-mask-combine-operation="union" title="Create a mask containing vertices selected in A or B.">A <span class="mesh-mask-operator-symbol">&cup;</span> B</button>
+        <button class="btn" data-mesh-mask-combine-operation="intersection" title="Create a mask containing vertices selected in both A and B.">A <span class="mesh-mask-operator-symbol is-intersection">&cap;</span> B</button>
+        <button class="btn" data-mesh-mask-combine-operation="difference" title="Create a mask containing vertices selected in A but not B.">A <span class="mesh-mask-operator-symbol">&#8726;</span> B</button>
+      </div>
+    </div>
 
     <div class="section-title">Active Mask</div>
     <div class="mesh-mask-option-group">
@@ -2280,6 +2494,42 @@ function renderPanel() {
   });
 
   document.getElementById('btn-mesh-mask-add')?.addEventListener('click', addMask);
+  document.getElementById('btn-mesh-mask-duplicate')?.addEventListener('click', () => {
+    duplicateMask(activeMaskIndex);
+  });
+
+  const combineSelectA = document.getElementById('mesh-mask-combine-a');
+  const combineSelectB = document.getElementById('mesh-mask-combine-b');
+
+  combineSelectA?.addEventListener('change', () => {
+    combineMaskAId = Number(combineSelectA.value) || null;
+    updateMaskCombineControls();
+    if (maskCombinePreviewOperation) {
+      previewMaskCombination(maskCombinePreviewOperation);
+    }
+  });
+
+  combineSelectB?.addEventListener('change', () => {
+    combineMaskBId = Number(combineSelectB.value) || null;
+    updateMaskCombineControls();
+    if (maskCombinePreviewOperation) {
+      previewMaskCombination(maskCombinePreviewOperation);
+    }
+  });
+
+  document.querySelectorAll('[data-mesh-mask-combine-operation]').forEach(button => {
+    const operation = button.getAttribute('data-mesh-mask-combine-operation');
+    button.addEventListener('pointerenter', () => previewMaskCombination(operation));
+    button.addEventListener('pointerover', () => previewMaskCombination(operation));
+    button.addEventListener('pointermove', () => previewMaskCombination(operation));
+    button.addEventListener('mouseenter', () => previewMaskCombination(operation));
+    button.addEventListener('focus', () => previewMaskCombination(operation));
+    button.addEventListener('pointerleave', () => endMaskCombinationPreview(operation));
+    button.addEventListener('mouseleave', () => endMaskCombinationPreview(operation));
+    button.addEventListener('blur', () => endMaskCombinationPreview(operation));
+    button.addEventListener('click', () => createCombinedMask(operation));
+  });
+
   document.querySelectorAll('[data-mesh-mask-edit-action]').forEach(button => {
     const action = button.getAttribute('data-mesh-mask-edit-action');
     button.addEventListener('pointerenter', () => beginMaskEditPreview(action));
@@ -2312,6 +2562,10 @@ function renderPanel() {
 
 function resetForNewFile() {
   clearPreview();
+  maskEditPreviewAction = null;
+  maskCombinePreviewOperation = null;
+  combineMaskAId = null;
+  combineMaskBId = null;
   restoreRenderBackup({ disposeOriginals: true });
   componentIndex.reset();
   maskTopologyCache = new WeakMap();

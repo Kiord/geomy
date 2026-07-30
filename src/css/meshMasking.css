@@ -99,18 +99,61 @@
 
 .mesh-mask-list {
   max-height: 240px;
+  overflow-x: hidden;
   overflow-y: auto;
   margin-top: 6px;
 }
 
+.mesh-mask-combine {
+  display: grid;
+  gap: 6px;
+  padding: 8px;
+  border: 1px solid var(--border);
+  background: var(--panel-bg);
+}
+
+.mesh-mask-combine-expression {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto minmax(0, 1fr);
+  align-items: center;
+  gap: 5px;
+  color: var(--text-dim);
+  font-size: 0.74rem;
+}
+
+.mesh-mask-combine-expression label {
+  color: var(--text);
+  font-weight: 700;
+}
+
+.mesh-mask-combine-expression select {
+  min-width: 0;
+  width: 100%;
+  padding: 4px 6px;
+  font-size: 0.74rem;
+}
+
+.mesh-mask-operator-symbol {
+  display: inline-block;
+  font-size: 1.15em;
+  line-height: 0;
+}
+
+.mesh-mask-operator-symbol.is-intersection {
+  transform: scale(1.15);
+}
+
 .mesh-mask-row {
   display: grid;
-  grid-template-columns: auto auto minmax(72px, 1fr) auto auto;
+  grid-template-columns: auto auto minmax(0, 1fr) minmax(0, auto) auto;
   gap: 6px;
   align-items: center;
+  width: 100%;
+  min-width: 0;
   padding: 4px 6px;
   border-bottom: 1px solid var(--border);
   border-radius: 0;
+  box-sizing: border-box;
   font-size: 0.76rem;
   transition: background 0.1s;
 }
@@ -166,9 +209,13 @@
 }
 
 .mesh-mask-row-count {
+  min-width: 0;
+  max-width: 68px;
+  overflow: hidden;
   color: var(--text-dim);
   font-family: var(--font-family);
-  font-size: 0.68rem;
+  font-size: 0.64rem;
+  text-overflow: ellipsis;
   white-space: nowrap;
 }
 
