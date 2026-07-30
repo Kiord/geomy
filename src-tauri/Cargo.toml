@@ -1,8 +1,8 @@
 [package]
 name = "geomy"
-version = "0.1.0"
+version = "0.1.1"
 description = "A 3D mesh toolbox"
-authors = ["Geomy contributors"]
+authors = ["geomy contributors"]
 edition = "2021"
 
 [build-dependencies]
@@ -10,3 +10,10 @@ tauri-build = { version = "2", features = [] }
 
 [dependencies]
 tauri = { version = "2", features = [] }
+
+[profile.release]
+codegen-units = 1
+lto = true
+opt-level = "s"
+panic = "abort"
+strip = true

@@ -1,4 +1,5 @@
 import { readFileSync, writeFileSync } from 'node:fs'
+import { execFileSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 import path from 'node:path'
 
@@ -29,4 +30,12 @@ if (updatedCargoManifest === cargoManifest && !cargoManifest.includes(`version =
 }
 
 writeFileSync(cargoManifestPath, updatedCargoManifest)
+
+if (process.env.npm_lifecycle_event === 'version') {
+  execFileSync('git', ['add', tauriConfigPath, cargoManifestPath], {
+    cwd: projectRoot,
+    stdio: 'inherit',
+  })
+}
+
 console.log(`Synchronized Tauri version to ${version}`)

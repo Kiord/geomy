@@ -15,7 +15,7 @@ click [here](https://geomy.gker.fr)
 
 ### Install and run locally 
 
-The hosted app remains the main way to use Geomy. For development:
+The hosted app remains the main way to use geomy. For development:
 
 ```
 npm install
@@ -32,10 +32,13 @@ npm test
 
 Download the file for your system from the latest GitHub release:
 
-- Windows: `Geomy_*_portable.exe` runs directly, or `Geomy_*_setup.exe`
-  installs Geomy for the current user.
-- Linux: make `Geomy_*.AppImage` executable with `chmod +x`, then run it.
-- macOS: open `Geomy_*.dmg` and drag Geomy into Applications.
+- Windows: `geomy_*_portable.exe` runs directly, or `geomy_*_setup.exe`
+  installs geomy for the current user.
+- Linux: install `geomy_*_linux_*.deb` through the system package manager, or
+  make the extensionless `geomy_*_linux_x64` file executable with `chmod +x`
+  and run it directly. The standalone file requires GTK 3 and WebKitGTK 4.1
+  from the distribution.
+- macOS: open `geomy_*.dmg` and drag geomy into Applications.
 
 The Windows builds use the Microsoft Edge WebView2 runtime included with current
 Windows 10 and Windows 11 installations. The installer can download WebView2 when

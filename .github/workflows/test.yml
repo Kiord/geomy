@@ -1,4 +1,4 @@
-name: Test Geomy
+name: Test geomy
 
 on:
   push:

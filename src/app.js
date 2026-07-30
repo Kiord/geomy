@@ -687,7 +687,7 @@ function smoothImportedGeometry(geometry) {
   if (!geometry?.attributes?.position) return geometry;
 
   // Critical: never weld, merge, re-index, or otherwise replace imported
-  // geometry here. Geomy tools (masking, landmarks, segmentation, rigid align)
+  // geometry here. geomy tools (masking, landmarks, segmentation, rigid align)
   // rely on the imported vertex count and order staying stable.
   //
   // Imported/authored normals are preserved. Normals are generated only when

@@ -1,4 +1,4 @@
-name: Deploy Geomy
+name: Deploy geomy
 
 on:
   push:

@@ -1,7 +1,7 @@
 {
   "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
-  "productName": "Geomy",
-  "version": "0.1.0",
+  "productName": "geomy",
+  "version": "0.1.1",
   "identifier": "fr.gker.geomy",
   "build": {
     "beforeDevCommand": "npm run dev",
@@ -12,7 +12,7 @@
   "app": {
     "windows": [
       {
-        "title": "Geomy",
+        "title": "geomy",
         "width": 1440,
         "height": 900,
         "minWidth": 900,

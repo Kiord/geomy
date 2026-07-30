@@ -1,4 +1,4 @@
-name: Publish Geomy Release
+name: Publish geomy Release
 
 on:
   push:
@@ -46,10 +46,10 @@ jobs:
         shell: bash
         run: |
           gh release create "$GITHUB_REF_NAME" \
-            "geomy-${GITHUB_REF_NAME}.zip#Built Geomy website" \
+            "geomy-${GITHUB_REF_NAME}.zip#Built geomy website" \
             --verify-tag \
             --generate-notes \
-            --title "Geomy ${GITHUB_REF_NAME}"
+            --title "geomy ${GITHUB_REF_NAME}"
 
   desktop:
     needs: release
@@ -61,7 +61,7 @@ jobs:
             args: '--bundles nsis'
             rust-targets: ''
           - platform: ubuntu-22.04
-            args: '--bundles appimage'
+            args: '--bundles deb'
             rust-targets: ''
           - platform: macos-latest
             args: '--bundles dmg --target universal-apple-darwin'
@@ -92,6 +92,9 @@ jobs:
       - run: npm ci
       - run: npm test
 
+      - name: Synchronize desktop version
+        run: node scripts/sync-tauri-version.js
+
       - name: Build and upload desktop application
         uses: tauri-apps/tauri-action@v1
         env:
@@ -100,7 +103,7 @@ jobs:
           tagName: ${{ github.ref_name }}
           releaseDraft: false
           args: ${{ matrix.args }}
-          releaseAssetNamePattern: 'Geomy_[version]_[platform]_[arch][setup][ext]'
+          releaseAssetNamePattern: 'geomy_[version]_[platform]_[arch][setup][ext]'
 
       - name: Upload portable Windows executable
         if: runner.os == 'Windows'
@@ -108,6 +111,19 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          $portableName = "Geomy_${env:GITHUB_REF_NAME}_windows_x64_portable.exe"
+          $releaseVersion = $env:GITHUB_REF_NAME -replace '^v', ''
+          $portableName = "geomy_${releaseVersion}_windows_x64_portable.exe"
           Copy-Item "src-tauri\target\release\geomy.exe" $portableName
           gh release upload $env:GITHUB_REF_NAME $portableName --clobber
+
+      - name: Upload standalone Linux executable
+        if: runner.os == 'Linux'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          release_version="${GITHUB_REF_NAME#v}"
+          standalone_name="geomy_${release_version}_linux_x64"
+          cp "src-tauri/target/release/geomy" "$standalone_name"
+          chmod +x "$standalone_name"
+          gh release upload "$GITHUB_REF_NAME" "$standalone_name" --clobber
