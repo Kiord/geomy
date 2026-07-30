@@ -22,6 +22,7 @@ import { downloadBlob } from '../util.js';
 import { formatBytes, safeFilename } from '../core/textUtils.js';
 import { downloadArrayBundle, downloadNpy, jsonEntry, npyEntry, parseBundleArrays, readArrayBundle } from '../io/numpyBundle.js';
 import { loadCanonicalOBJFile } from '../io/objCanonicalLoader.js';
+import { resetSkinnedMeshesToBindPose } from '../io/gltfBindPose.js';
 import {
   arrayByName,
   arrayEntryByNames,
@@ -1183,7 +1184,8 @@ async function objectFromFile(file, side) {
   try {
     if (ext === 'gltf' || ext === 'glb') {
       const gltf = await loader.loadAsync(url);
-      return gltf.scene;
+      resetSkinnedMeshesToBindPose(gltf.scene);
+      return prepareObjectGeometry(gltf.scene);
     }
 
     const geometry = smoothImportedGeometry(await loader.loadAsync(url));

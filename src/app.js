@@ -10,6 +10,7 @@ import { HDRLoader } from 'three/examples/jsm/loaders/HDRLoader.js';
 import { EXRLoader } from 'three/examples/jsm/loaders/EXRLoader.js';
 import { getTaskCapabilities, taskAcceptsSharedMeshLoad } from './core/taskCapabilities.js';
 import { loadCanonicalOBJFile } from './io/objCanonicalLoader.js';
+import { resetSkinnedMeshesToBindPose } from './io/gltfBindPose.js';
 import { arrayRows, fileKind, readSimpleArrayFile } from './io/taskDataDaemon.js';
 import { readSymmetryMappingFile, setMeshSymmetry } from './io/vertexSymmetry.js';
 
@@ -207,6 +208,7 @@ async function objectFromMeshPositionFile(file) {
   try {
     if (ext === 'gltf' || ext === 'glb') {
       const gltf = await loader.loadAsync(url);
+      resetSkinnedMeshesToBindPose(gltf.scene);
       return prepareObjectGeometry(gltf.scene);
     }
 
@@ -822,6 +824,7 @@ export function loadFile(file) {
     switch (ext) {
       case 'glb': case 'gltf':
         loaders.gltf.load(url, g => {
+          resetSkinnedMeshesToBindPose(g.scene);
           prepareObjectGeometry(g.scene);
           addToScene(g.scene);
         }); break;
