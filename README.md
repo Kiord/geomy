@@ -1,75 +1,110 @@
-
-
-
 <p align="center">
-<picture >
-  <img alt="Fallback image description" src="https://geomy.gker.fr/logo.svg" width=128>
-</picture>
-  <br>
-  A 3D mesh toolbox in your browser
+  <img src="https://geomy.gker.fr/logo.svg" width="128" alt="geomy logo">
 </p>
 
-### Access online
+<h1 align="center">geomy</h1>
 
-click [here](https://geomy.gker.fr)
+<p align="center">
+  A browser-first mesh workbench for research, engineering, and prototyping.
+</p>
 
-### Install and run locally 
+<p align="center">
+  <a href="https://geomy.gker.fr">Open geomy</a>
+  ·
+  <a href="https://github.com/Kiord/geomy/releases">Desktop downloads</a>
+</p>
 
-The hosted app remains the main way to use geomy. For development:
+## About
 
-```
+geomy is a mesh workbench for research, engineering, and prototyping. It provides tools for inspection, annotation, masking, segmentation, and alignment.
+
+The application stays close to the source data. It does not silently weld, simplify, or re-index imported meshes. Vertex order and topology remain stable across inspection and annotation tasks, so exported indices and arrays still match the original mesh.
+
+NPY and NPZ support makes geomy suitable as an interactive step in Python and NumPy workflows.
+
+![geomy viewport and task panel](docs/images/screenshot.jpg)
+
+## Tools
+
+- **3D inspection:** inspect geometry and scene properties, adjust the display, and show vertices, edges, normals, or materials
+- **Landmark picking:** place vertex or surface landmarks, including symmetric placement
+- **Mesh masking:** paint and manage vertex masks, use morphological operations, and combine masks
+- **Mesh segmentation:** assign vertices to named regions and reorder or edit the segmentation
+- **Rigid alignment:** align meshes from landmarks or selected regions and export transforms or vertices
+
+## Data and NumPy
+
+Mesh files can be loaded from **OBJ**, **STL**, **PLY**, **GLB**, and **GLTF**. Task data can be imported or exported using formats suited to scripts and notebooks, including **NPY**, **NPZ**, **JSON**, and plain text where applicable.
+
+Depending on the task, geomy can exchange:
+
+- vertex indices and dense boolean masks
+- segmentation labels and region masks
+- landmark vertex indices or simplex and barycentric coordinates
+- transformation matrices and transformed vertex arrays
+
+
+## Use geomy
+
+### Online
+
+The hosted version is available at [geomy.gker.fr](https://geomy.gker.fr).
+
+### Run from source
+
+You need a recent version of Node.js.
+
+```bash
+git clone https://github.com/Kiord/geomy.git
+cd geomy
 npm install
 npm run dev
-``` 
+```
 
-Run the unit tests with:
+The development server prints the local address to open in your browser.
 
-```sh
+### Desktop builds
+
+Desktop packages are published on the [GitHub Releases page](https://github.com/Kiord/geomy/releases):
+
+- Windows portable executable and installer
+- Linux executable and `.deb` package
+- macOS `.dmg` package
+
+The desktop application uses the operating system's native webview. On Windows, WebView2 is included with current versions of Windows and is available separately from Microsoft for older installations. The Linux build requires GTK 3 and WebKitGTK 4.1 from the distribution.
+
+## Development
+
+Run the unit tests:
+
+```bash
 npm test
 ```
 
-### Run as a desktop application
+Build the static web application:
 
-Download the file for your system from the latest GitHub release:
+```bash
+npm run build
+```
 
-- Windows: `geomy_*_portable.exe` runs directly, or `geomy_*_setup.exe`
-  installs geomy for the current user.
-- Linux: install `geomy_*_linux_*.deb` through the system package manager, or
-  make the extensionless `geomy_*_linux_x64` file executable with `chmod +x`
-  and run it directly. The standalone file requires GTK 3 and WebKitGTK 4.1
-  from the distribution.
-- macOS: open `geomy_*.dmg` and drag geomy into Applications.
+Run the Tauri desktop application in development mode:
 
-The Windows builds use the Microsoft Edge WebView2 runtime included with current
-Windows 10 and Windows 11 installations. The installer can download WebView2 when
-it is missing.
-
-Desktop development additionally requires Rust and the
-[Tauri prerequisites](https://v2.tauri.app/start/prerequisites/):
-
-```sh
-npm install
+```bash
 npm run desktop:dev
 npm run desktop:build
 ```
 
-### Publishing a release
+Building the desktop application requires the platform dependencies listed in the [Tauri prerequisites](https://v2.tauri.app/start/prerequisites/).
 
-Create releases from a clean default branch with:
+## Publishing a release
 
-```sh
+Update the version, commit it, and push the commit with its tag:
+
+```bash
 npm version X.X.X
 git push origin HEAD --follow-tags
 ```
 
-The npm version command updates the web and desktop versions together. Pushing the
-tag deploys the hosted site and publishes the website ZIP plus Windows, Linux, and
-macOS desktop downloads to the GitHub release.
+Pushing the version tag starts the GitHub Actions release workflow. It builds the web application and desktop packages, then attaches the generated files to the corresponding GitHub release.
 
-
-### Implemented tasks
-- 3D inspection
-- Landmarking
-- Vertex masking
-- Vertex segmentation
-- Rigid align
+*Development of this project deliberately makes use of AI assistance*
