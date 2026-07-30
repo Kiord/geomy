@@ -13,6 +13,7 @@ import { inspectTask } from './tasks/inspect.js';
 import { initVizPanel } from './panels/visualization.js';
 import { initGeometryInspection } from './panels/geometryInspection.js';
 import { GEOMY_RELEASE_URL, GEOMY_VERSION } from './version.js';
+import { RecenterGestureGuard } from './interaction/RecenterGestureGuard.js';
 
 function initSidePanelToggles() {
   const topBtn = document.getElementById('toggle-topbar');
@@ -228,7 +229,20 @@ function boot() {
   }
 
   // Global double-click → recenter
+  const recenterGestureGuard = new RecenterGestureGuard();
+
+  document.addEventListener('pointerdown', event => {
+    const canvas = app.renderer?.domElement;
+    if (canvas && (event.target === canvas || canvas.contains(event.target))) {
+      recenterGestureGuard.recordPointerDown(event);
+    }
+  }, true);
+
+  window.addEventListener('blur', () => recenterGestureGuard.reset());
+
   app.renderer.domElement.addEventListener('dblclick', event => {
+    if (recenterGestureGuard.shouldBlockRecenter(event)) return;
+
     if (app.task?.onDblClick) {
       const consumed = app.task.onDblClick(event);
       if (consumed) return;
