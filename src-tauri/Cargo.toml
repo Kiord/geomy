@@ -1,6 +1,6 @@
 [package]
 name = "geomy"
-version = "0.1.1"
+version = "0.1.2"
 description = "A 3D mesh toolbox"
 authors = ["geomy contributors"]
 edition = "2021"
