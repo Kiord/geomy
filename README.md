@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="https://geomy.gker.fr/logo.svg" width="128" alt="geomy logo">
+  <img src="public/logo.svg" width="128" alt="geomy logo">
 </p>
 
 <h1 align="center">geomy</h1>
