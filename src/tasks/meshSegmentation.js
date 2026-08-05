@@ -29,11 +29,13 @@ import {
   collectHitVertexIndices as collectHitVertices,
   disposeMaterialOrArray as disposeMaterial,
   ensureColorAttribute as colorAttributeFor,
+  getCanonicalData,
   getCanonicalVertexCount,
   getCurrentMeshes as meshes,
   getMeshLabel as meshName,
   getTriangleCount as triangleCount,
   isTextInputTarget,
+  renderVertexToCanonical,
   restoreVisualizationRenderMode as restoreSharedVisualizationRenderMode,
   screenRadiusToWorldRadius,
   setVertexColor as setColor,
@@ -44,6 +46,7 @@ import {
   geodesicBrushStatus,
   precomputeGeodesicBrush,
 } from './geodesicBrushLut.js';
+import { buildMaskTopology, dilateMaskSelection } from './maskMorphology.js';
 import {
   getSymmetryMapping,
   symmetryPairs,
@@ -81,6 +84,7 @@ let suppressedControls = null;
 
 const assignmentsByMesh = new Map();
 const symmetricRegionIds = new Map();
+const topologyByMesh = new WeakMap();
 const previewedVertices = new Map();
 const visualizationState = new TemporaryVisualizationState();
 const renderBackup = new MeshRenderBackup({ clearPreview, disposeMaterial });
@@ -370,6 +374,49 @@ function mergeSymmetricRegionInto(sourceRegionId) {
   symmetricRegionIds.delete(sourceRegionId);
   symmetricRegionIds.delete(symmetricRegionId);
   return true;
+}
+
+function topologyForMesh(mesh) {
+  const geometry = mesh?.geometry;
+  const vertexCount = getCanonicalVertexCount(mesh);
+  if (!geometry || !vertexCount) return { neighbors: [], boundaryVertices: new Set() };
+
+  const canonical = getCanonicalData(mesh);
+  const faces = canonical?.faces || null;
+  const index = geometry.index || null;
+  const sourceVertexId = geometry.getAttribute('sourceVertexId') || null;
+  const cached = topologyByMesh.get(mesh);
+  if (
+    cached
+    && cached.geometry === geometry
+    && cached.vertexCount === vertexCount
+    && cached.faces === faces
+    && cached.index === index
+    && cached.sourceVertexId === sourceVertexId
+  ) return cached;
+
+  const faceIndexCount = faces
+    ? faces.length
+    : (index ? index.count : (geometry.attributes.position?.count || 0));
+  const triangleCount = Math.floor(faceIndexCount / 3);
+  const vertexAt = faces
+    ? offset => Number(faces[offset])
+    : offset => renderVertexToCanonical(mesh, index ? index.getX(offset) : offset);
+  const triangleIndices = new Array(triangleCount * 3);
+  for (let offset = 0; offset < triangleIndices.length; offset++) {
+    triangleIndices[offset] = vertexAt(offset);
+  }
+
+  const topology = {
+    geometry,
+    vertexCount,
+    faces,
+    index,
+    sourceVertexId,
+    ...buildMaskTopology(vertexCount, triangleIndices),
+  };
+  topologyByMesh.set(mesh, topology);
+  return topology;
 }
 
 function hitAssignments(hit, regionId, mode, { createRegions = false } = {}) {
@@ -1052,6 +1099,50 @@ function clearAll() {
   return commit('clear segmentation', () => {
     assignmentsByMesh.forEach(assignment => assignment.fill(NONE));
   });
+}
+
+function dilateActiveRegion() {
+  const regionId = activeRegion().id;
+  return commit('dilate active region', () => {
+    meshes().forEach(mesh => {
+      const assignment = assignmentFor(mesh);
+      if (!assignment) return;
+
+      const current = new Set();
+      for (let index = 0; index < assignment.length; index++) {
+        if (assignment[index] === regionId) current.add(index);
+      }
+      if (!current.size) return;
+
+      const dilated = dilateMaskSelection(current, topologyForMesh(mesh));
+      const additions = Array.from(dilated).filter(index => !current.has(index));
+      if (!additions.length) return;
+
+      const mapping = paintSymmetric ? getSymmetryMapping(mesh) : null;
+      let symmetricRegionId = regionId;
+      if (mapping && newSymmetricLabels) {
+        const self = symmetryPairs(mesh).self;
+        const touchesSagittal = self.some(index => assignment[index] === regionId)
+          || additions.some(index => mapping[index] === index);
+        if (touchesSagittal) {
+          mergeSymmetricRegionInto(regionId);
+        } else {
+          symmetricRegionId = createSymmetricRegion(regionId);
+        }
+      }
+
+      if (mapping) {
+        additions.forEach(index => {
+          const symmetricIndex = Number(mapping[index]);
+          if (Number.isInteger(symmetricIndex) && symmetricIndex >= 0 && symmetricIndex < assignment.length) {
+            assignment[symmetricIndex] = symmetricRegionId;
+          }
+        });
+      }
+      // Direct dilation always wins when the active region already spans both sides.
+      additions.forEach(index => { assignment[index] = regionId; });
+    });
+  }, { renderRegions: paintSymmetric && newSymmetricLabels });
 }
 
 function addRegion() {
@@ -2030,6 +2121,7 @@ function renderPanel() {
 
     <div class="section-title">Edit Segmentation</div>
     <div class="task-edit-compact">
+      <button id="btn-mesh-seg-dilate" class="btn" title="Expand the active region by one mesh edge.">Dilate</button>
       <button id="btn-mesh-seg-clear-active" class="btn btn-danger">Clear Region</button>
       <button id="btn-mesh-seg-clear-all" class="btn btn-danger">Clear All</button>
     </div>
@@ -2112,6 +2204,7 @@ function renderPanel() {
   });
 
   document.getElementById('btn-mesh-seg-add')?.addEventListener('click', addRegion);
+  document.getElementById('btn-mesh-seg-dilate')?.addEventListener('click', dilateActiveRegion);
   document.getElementById('btn-mesh-seg-clear-active')?.addEventListener('click', () => {
     if (regionVertexCount() === 0 || window.confirm('Clear the active region assignments?')) clearActiveRegion();
   });
