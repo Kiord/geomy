@@ -5,7 +5,7 @@
 <h1 align="center">geomy</h1>
 
 <p align="center">
-  A cross-platform mesh workbench for research, engineering, and prototyping in 3D graphics.
+  Cross-platform 3D mesh annotation tool for NumPy workflows
 </p>
 
 <p align="center">
@@ -16,7 +16,7 @@
 
 ## About
 
-geomy is a mesh workbench for research, engineering, and prototyping in 3D graphics. It provides tools for inspection, annotation, masking, segmentation, and alignment.
+Geomy provides tools for 3D mesh inspection, annotation, masking, segmentation, and alignment.
 
 The application stays close to the source data. It does not silently weld, simplify, or re-index imported meshes. Vertex order and topology remain stable across inspection and annotation tasks, so exported indices and arrays still match the original mesh.
 
