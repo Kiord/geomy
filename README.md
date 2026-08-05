@@ -5,7 +5,7 @@
 <h1 align="center">geomy</h1>
 
 <p align="center">
-  Cross-platform 3D mesh annotation tool for NumPy workflows
+  Cross-platform 3D mesh annotation tools for NumPy workflows.
 </p>
 
 <p align="center">
