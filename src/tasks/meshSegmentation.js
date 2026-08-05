@@ -45,7 +45,6 @@ import {
   precomputeGeodesicBrush,
 } from './geodesicBrushLut.js';
 import {
-  expandWithSymmetry,
   getSymmetryMapping,
   symmetryPairs,
 } from '../io/vertexSymmetry.js';
@@ -67,6 +66,7 @@ let active = false;
 let brushRadius = DEFAULT_BRUSH_RADIUS;
 let useGeodesicBrush = false;
 let paintSymmetric = false;
+let newSymmetricLabels = false;
 let geodesicBrushRequestId = 0;
 let regions = [];
 let activeRegionIndex = 0;
@@ -80,6 +80,7 @@ let controlsPreviousEnabled = true;
 let suppressedControls = null;
 
 const assignmentsByMesh = new Map();
+const symmetricRegionIds = new Map();
 const previewedVertices = new Map();
 const visualizationState = new TemporaryVisualizationState();
 const renderBackup = new MeshRenderBackup({ clearPreview, disposeMaterial });
@@ -325,7 +326,7 @@ function applyRenderMode() {
   });
 }
 
-function hitIndices(hit, mode) {
+function rawHitIndices(hit, mode) {
   const mesh = hit?.object;
   let indices;
   if (mode === 'brush' && useGeodesicBrush) {
@@ -334,7 +335,71 @@ function hitIndices(hit, mode) {
   }
 
   if (!indices) indices = collectHitVertices(hit, { mode, brushRadius, componentIndex, screenSpace: true });
-  return expandWithSymmetry(mesh, indices, paintSymmetric);
+  return indices;
+}
+
+function createSymmetricRegion(sourceRegionId, suffix = 'symmetric') {
+  const existingId = symmetricRegionIds.get(sourceRegionId);
+  if (existingId && regionById(existingId)) return existingId;
+
+  const sourceRegion = regionById(sourceRegionId);
+  if (!sourceRegion) return sourceRegionId;
+
+  const symmetricRegion = makeRegion(`${regionName(sourceRegion)} (${suffix})`);
+  regions.push(symmetricRegion);
+  symmetricRegionIds.set(sourceRegionId, symmetricRegion.id);
+  symmetricRegionIds.set(symmetricRegion.id, sourceRegionId);
+  return symmetricRegion.id;
+}
+
+function mergeSymmetricRegionInto(sourceRegionId) {
+  const symmetricRegionId = symmetricRegionIds.get(sourceRegionId);
+  if (!symmetricRegionId || !regionById(symmetricRegionId)) return false;
+
+  assignmentsByMesh.forEach(assignment => {
+    for (let index = 0; index < assignment.length; index++) {
+      if (assignment[index] === symmetricRegionId) assignment[index] = sourceRegionId;
+    }
+  });
+
+  const symmetricIndex = regions.findIndex(region => region.id === symmetricRegionId);
+  if (symmetricIndex >= 0) {
+    regions.splice(symmetricIndex, 1);
+    if (activeRegionIndex > symmetricIndex) activeRegionIndex -= 1;
+  }
+  symmetricRegionIds.delete(sourceRegionId);
+  symmetricRegionIds.delete(symmetricRegionId);
+  return true;
+}
+
+function hitAssignments(hit, regionId, mode, { createRegions = false } = {}) {
+  const mesh = hit?.object;
+  const sourceIndices = rawHitIndices(hit, mode);
+  const result = new Map(sourceIndices.map(index => [index, regionId]));
+  if (!paintSymmetric) return result;
+
+  const mapping = getSymmetryMapping(mesh);
+  if (!mapping) return result;
+
+  if (regionId === NONE || !newSymmetricLabels) {
+    sourceIndices.forEach(index => result.set(mapping[index], regionId));
+    return result;
+  }
+
+  const assignment = assignmentFor(mesh);
+  const self = symmetryPairs(mesh).self;
+  const touchesSagittal = self.some(index => assignment?.[index] === regionId)
+    || sourceIndices.some(index => mapping[index] === index);
+  if (touchesSagittal && createRegions) mergeSymmetricRegionInto(regionId);
+  const symmetricRegionId = touchesSagittal
+    ? regionId
+    : (symmetricRegionIds.get(regionId) || (createRegions ? createSymmetricRegion(regionId) : regionId));
+
+  sourceIndices.forEach(index => result.set(mapping[index], symmetricRegionId));
+  // A vertex directly under the brush always belongs to the active region,
+  // including when a wide brush overlaps both sides.
+  sourceIndices.forEach(index => result.set(index, regionId));
+  return result;
 }
 function applyRegionToVertex(mesh, index, regionId) {
   const assignment = assignmentFor(mesh);
@@ -359,7 +424,9 @@ function previewHit(hit, regionId, mode) {
   const color = colorAttributeFor(mesh);
   if (!assignment || !color) return;
 
-  const indices = hitIndices(hit, mode).filter(index => assignment[index] !== regionId);
+  const changes = Array.from(hitAssignments(hit, regionId, mode).entries())
+    .filter(([index, nextRegionId]) => assignment[index] !== nextRegionId);
+  const indices = changes.map(([index]) => index);
   if (!indices.length) return;
 
   const previewColor = regionId === NONE
@@ -377,9 +444,11 @@ function assignHit(hit, regionId, mode) {
   if (!mesh?.isMesh || !mesh.geometry?.attributes?.position) return 0;
 
   let changed = 0;
-  hitIndices(hit, mode).forEach(index => {
-    if (applyRegionToVertex(mesh, index, regionId)) changed += 1;
+  const regionCountBefore = regions.length;
+  hitAssignments(hit, regionId, mode, { createRegions: true }).forEach((nextRegionId, index) => {
+    if (applyRegionToVertex(mesh, index, nextRegionId)) changed += 1;
   });
+  if (regions.length !== regionCountBefore) renderRegionList();
   if (changed) updatePanelStats();
   return changed;
 }
@@ -421,6 +490,7 @@ function snapshot() {
     activeRegionIndex,
     nextRegionId,
     regions: regions.map(region => ({ id: region.id, name: regionName(region), color: region.color })),
+    symmetricRegionIds: Array.from(symmetricRegionIds.entries()),
     assignments: meshes().map(mesh => ({ mesh, assigned: sparseAssignments(mesh) })),
   };
 }
@@ -430,6 +500,7 @@ function snapshotKey(data) {
     activeRegionIndex: data.activeRegionIndex,
     nextRegionId: data.nextRegionId,
     regions: data.regions,
+    symmetricRegionIds: data.symmetricRegionIds,
     assignments: data.assignments.map(entry => [entry.mesh.uuid, entry.assigned]),
   });
 }
@@ -439,6 +510,10 @@ function restoreSnapshot(data) {
   nextRegionId = data.nextRegionId || 1;
   regions = data.regions.map(region => makeRegion(region.name, region.color, region.id));
   if (!regions.length) regions.push(makeRegion('Region 1'));
+  symmetricRegionIds.clear();
+  (data.symmetricRegionIds || []).forEach(([sourceId, targetId]) => {
+    if (regionById(sourceId) && regionById(targetId)) symmetricRegionIds.set(sourceId, targetId);
+  });
 
   assignmentsByMesh.clear();
   data.assignments.forEach(entry => {
@@ -1013,6 +1088,9 @@ function removeRegion(index) {
 
   return commit('remove region', () => {
     const id = regions[index].id;
+    const symmetricId = symmetricRegionIds.get(id);
+    symmetricRegionIds.delete(id);
+    if (symmetricId) symmetricRegionIds.delete(symmetricId);
     regions.splice(index, 1);
     assignmentsByMesh.forEach(assignment => {
       for (let i = 0; i < assignment.length; i++) {
@@ -1155,6 +1233,7 @@ function symmetryMeshStatus() {
 function updateSegmentationSymmetryStatus() {
   const status = symmetryMeshStatus();
   const paintCheck = document.getElementById('mesh-seg-paint-symmetric');
+  const newLabelsCheck = document.getElementById('mesh-seg-new-symmetric-labels');
   const buttons = document.querySelectorAll('[data-mesh-seg-symmetry-action]');
   const section = document.getElementById('mesh-seg-symmetry-section');
 
@@ -1171,6 +1250,15 @@ function updateSegmentationSymmetryStatus() {
     paintCheck.closest('label')?.classList.toggle('is-disabled', !status.canUse);
     paintCheck.title = status.canUse ? 'Paint mapped symmetric vertices at the same time.' : status.reason;
   }
+
+  if (newLabelsCheck) {
+    newLabelsCheck.checked = newSymmetricLabels;
+    newLabelsCheck.disabled = !status.canUse;
+    newLabelsCheck.closest('label')?.classList.toggle('is-disabled', !status.canUse);
+    newLabelsCheck.title = status.canUse
+      ? 'Use separate labels for symmetric regions unless they contain sagittal vertices.'
+      : status.reason;
+  }
 }
 
 function requireSymmetryMesh() {
@@ -1179,7 +1267,7 @@ function requireSymmetryMesh() {
   return status.mesh;
 }
 
-function transformedSegmentationValues(mesh, action) {
+function transformedSegmentationValues(mesh, action, { createRegions = false } = {}) {
   const current = assignmentFor(mesh).slice();
   const mapping = getSymmetryMapping(mesh);
   const next = action === 'mirror' ? new Int32Array(current.length) : current.slice();
@@ -1190,9 +1278,39 @@ function transformedSegmentationValues(mesh, action) {
   }
 
   const pairs = symmetryPairs(mesh);
-  const copies = action === 'right-to-left' ? pairs.rightToLeft : pairs.leftToRight;
+  const direction = action;
+  const copies = direction === 'right-to-left' ? pairs.rightToLeft : pairs.leftToRight;
+
+  let copiedRegionIds = null;
+  if (newSymmetricLabels) {
+    const sagittalRegionIds = new Set(
+      pairs.self
+        .map(vertexIndex => current[vertexIndex])
+        .filter(regionId => regionId !== NONE),
+    );
+    copiedRegionIds = new Map();
+
+    copies.forEach(({ source }) => {
+      const sourceRegionId = current[source];
+      if (
+        sourceRegionId === NONE
+        || sagittalRegionIds.has(sourceRegionId)
+        || copiedRegionIds.has(sourceRegionId)
+      ) return;
+
+      const sourceRegion = regionById(sourceRegionId);
+      if (!sourceRegion) return;
+
+      const side = direction === 'right-to-left' ? 'L' : 'R';
+      const copiedRegionId = symmetricRegionIds.get(sourceRegionId)
+        || (createRegions ? createSymmetricRegion(sourceRegionId, side) : sourceRegionId);
+      copiedRegionIds.set(sourceRegionId, copiedRegionId);
+    });
+  }
+
   copies.forEach(({ source, target }) => {
-    next[target] = current[source];
+    const sourceRegionId = current[source];
+    next[target] = copiedRegionIds?.get(sourceRegionId) ?? sourceRegionId;
   });
   return next;
 }
@@ -1209,7 +1327,8 @@ function symmetryAffectedVertices(mesh, action) {
   }
 
   const pairs = symmetryPairs(mesh);
-  const copies = action === 'right-to-left' ? pairs.rightToLeft : pairs.leftToRight;
+  const direction = action;
+  const copies = direction === 'right-to-left' ? pairs.rightToLeft : pairs.leftToRight;
   return new Set(copies.map(({ target }) => target));
 }
 
@@ -1253,8 +1372,8 @@ function applySegmentationSymmetry(action) {
   }
 
   commit(`segmentation symmetry ${action}`, () => {
-    applySegmentationValues(mesh, transformedSegmentationValues(mesh, action));
-  });
+    applySegmentationValues(mesh, transformedSegmentationValues(mesh, action, { createRegions: true }));
+  }, { renderRegions: newSymmetricLabels && action !== 'mirror' });
 }
 
 function renderRegionList() {
@@ -1533,6 +1652,7 @@ function applyImportedSegmentation(imported) {
     regions = imported.regions;
     activeRegionIndex = imported.activeRegionIndex;
     assignmentsByMesh.clear();
+    symmetricRegionIds.clear();
     imported.assignments.forEach((assignment, mesh) => assignmentsByMesh.set(mesh, assignment));
     nextRegionId = Math.max(1, Math.max(0, ...regions.map(region => region.id)) + 1);
   }, { renderRegions: true });
@@ -1927,6 +2047,7 @@ function renderPanel() {
     <div id="mesh-seg-symmetry-section">
       <div class="section-title">Symmetry</div>
       <label class="checkbox-label"><input type="checkbox" id="mesh-seg-paint-symmetric" ${paintSymmetric ? 'checked' : ''}> Paint symmetric vertices</label>
+      <label class="checkbox-label"><input type="checkbox" id="mesh-seg-new-symmetric-labels" ${newSymmetricLabels ? 'checked' : ''}> New symmetric labels</label>
       <div class="task-edit-compact mesh-symmetry-actions">
         <button class="btn btn-mini" data-mesh-seg-symmetry-action="left-to-right" data-ready-title="Copy one fitted-plane side to the other.">L -> R</button>
         <button class="btn btn-mini" data-mesh-seg-symmetry-action="right-to-left" data-ready-title="Copy the opposite fitted-plane side back.">R -> L</button>
@@ -1971,6 +2092,11 @@ function renderPanel() {
     updateSegmentationSymmetryStatus();
   });
 
+  document.getElementById('mesh-seg-new-symmetric-labels')?.addEventListener('change', event => {
+    newSymmetricLabels = !!event.target.checked;
+    updateSegmentationSymmetryStatus();
+  });
+
   document.querySelectorAll('[data-mesh-seg-symmetry-action]').forEach(button => {
     const action = button.getAttribute('data-mesh-seg-symmetry-action');
     button.addEventListener('pointerenter', () => previewSegmentationSymmetry(action));
@@ -2007,12 +2133,14 @@ function resetForNewFile() {
   clearPreview();
   restoreRenderBackup({ disposeOriginals: true });
   assignmentsByMesh.clear();
+  symmetricRegionIds.clear();
   componentIndex.reset();
   regions = [];
   activeRegionIndex = 0;
   nextRegionId = 1;
   painting = null;
   paintSymmetric = false;
+  newSymmetricLabels = false;
   ensureRegion();
   clearHistory();
 }
