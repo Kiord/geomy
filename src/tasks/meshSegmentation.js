@@ -1101,46 +1101,113 @@ function clearAll() {
   });
 }
 
+function activeRegionDilationPlan(mesh, regionId, { createRegions = false } = {}) {
+  const assignment = assignmentFor(mesh);
+  const predicted = new Map();
+  if (!assignment) return predicted;
+
+  const current = new Set();
+  for (let index = 0; index < assignment.length; index++) {
+    if (assignment[index] === regionId) current.add(index);
+  }
+  if (!current.size) return predicted;
+
+  const dilated = dilateMaskSelection(current, topologyForMesh(mesh));
+  const additions = Array.from(dilated).filter(index => !current.has(index));
+  if (!additions.length) return predicted;
+
+  const mapping = paintSymmetric ? getSymmetryMapping(mesh) : null;
+  if (!mapping) {
+    additions.forEach(index => predicted.set(index, regionId));
+    return predicted;
+  }
+
+  if (!newSymmetricLabels) {
+    additions.forEach(index => {
+      predicted.set(index, regionId);
+      predicted.set(Number(mapping[index]), regionId);
+    });
+    return predicted;
+  }
+
+  const pairs = symmetryPairs(mesh);
+  const touchesSagittal = pairs.self.some(index => assignment[index] === regionId)
+    || additions.some(index => mapping[index] === index);
+  const existingSymmetricRegionId = symmetricRegionIds.get(regionId);
+  let symmetricRegionId = regionId;
+
+  if (touchesSagittal) {
+    if (existingSymmetricRegionId) {
+      for (let index = 0; index < assignment.length; index++) {
+        if (assignment[index] === existingSymmetricRegionId) predicted.set(index, regionId);
+      }
+      if (createRegions) mergeSymmetricRegionInto(regionId);
+    }
+  } else {
+    symmetricRegionId = existingSymmetricRegionId
+      || (createRegions ? createSymmetricRegion(regionId) : -1);
+  }
+
+  const left = new Set(pairs.leftToRight.map(({ source }) => source));
+  const right = new Set(pairs.leftToRight.map(({ target }) => target));
+  let leftCount = 0;
+  let rightCount = 0;
+  current.forEach(index => {
+    if (left.has(index)) leftCount += 1;
+    if (right.has(index)) rightCount += 1;
+  });
+  const activeSide = leftCount > rightCount ? 'left' : (rightCount > leftCount ? 'right' : null);
+  const labelForSide = (index, fallback) => {
+    if (touchesSagittal || !activeSide) return fallback;
+    if (left.has(index)) return activeSide === 'left' ? regionId : symmetricRegionId;
+    if (right.has(index)) return activeSide === 'right' ? regionId : symmetricRegionId;
+    return fallback;
+  };
+
+  additions.forEach(index => {
+    const symmetricIndex = Number(mapping[index]);
+    predicted.set(index, labelForSide(index, regionId));
+    if (Number.isInteger(symmetricIndex) && symmetricIndex >= 0 && symmetricIndex < assignment.length) {
+      predicted.set(symmetricIndex, labelForSide(symmetricIndex, symmetricRegionId));
+    }
+  });
+
+  // Existing active-region vertices are seeds, never dilation targets.
+  current.forEach(index => predicted.set(index, regionId));
+  return predicted;
+}
+
+function previewActiveRegionDilation() {
+  clearPreview();
+  const regionId = activeRegion().id;
+
+  meshes().forEach(mesh => {
+    const assignment = assignmentFor(mesh);
+    const color = colorAttributeFor(mesh);
+    if (!assignment || !color) return;
+
+    const changed = new Set();
+    activeRegionDilationPlan(mesh, regionId).forEach((nextRegionId, index) => {
+      if (assignment[index] === nextRegionId) return;
+      changed.add(index);
+      setColor(color, index, SYMMETRY_PREVIEW_COLOR);
+    });
+    if (!changed.size) return;
+
+    color.needsUpdate = true;
+    previewedVertices.set(mesh, changed);
+    cursor.previewCount += changed.size;
+  });
+}
+
 function dilateActiveRegion() {
   const regionId = activeRegion().id;
   return commit('dilate active region', () => {
     meshes().forEach(mesh => {
       const assignment = assignmentFor(mesh);
       if (!assignment) return;
-
-      const current = new Set();
-      for (let index = 0; index < assignment.length; index++) {
-        if (assignment[index] === regionId) current.add(index);
-      }
-      if (!current.size) return;
-
-      const dilated = dilateMaskSelection(current, topologyForMesh(mesh));
-      const additions = Array.from(dilated).filter(index => !current.has(index));
-      if (!additions.length) return;
-
-      const mapping = paintSymmetric ? getSymmetryMapping(mesh) : null;
-      let symmetricRegionId = regionId;
-      if (mapping && newSymmetricLabels) {
-        const self = symmetryPairs(mesh).self;
-        const touchesSagittal = self.some(index => assignment[index] === regionId)
-          || additions.some(index => mapping[index] === index);
-        if (touchesSagittal) {
-          mergeSymmetricRegionInto(regionId);
-        } else {
-          symmetricRegionId = createSymmetricRegion(regionId);
-        }
-      }
-
-      if (mapping) {
-        additions.forEach(index => {
-          const symmetricIndex = Number(mapping[index]);
-          if (Number.isInteger(symmetricIndex) && symmetricIndex >= 0 && symmetricIndex < assignment.length) {
-            assignment[symmetricIndex] = symmetricRegionId;
-          }
-        });
-      }
-      // Direct dilation always wins when the active region already spans both sides.
-      additions.forEach(index => { assignment[index] = regionId; });
+      activeRegionDilationPlan(mesh, regionId, { createRegions: true })
+        .forEach((nextRegionId, index) => { assignment[index] = nextRegionId; });
     });
   }, { renderRegions: paintSymmetric && newSymmetricLabels });
 }
@@ -2204,7 +2271,17 @@ function renderPanel() {
   });
 
   document.getElementById('btn-mesh-seg-add')?.addEventListener('click', addRegion);
-  document.getElementById('btn-mesh-seg-dilate')?.addEventListener('click', dilateActiveRegion);
+  const dilateButton = document.getElementById('btn-mesh-seg-dilate');
+  dilateButton?.addEventListener('pointerenter', previewActiveRegionDilation);
+  dilateButton?.addEventListener('pointerover', previewActiveRegionDilation);
+  dilateButton?.addEventListener('pointermove', previewActiveRegionDilation);
+  dilateButton?.addEventListener('mouseover', previewActiveRegionDilation);
+  dilateButton?.addEventListener('mouseenter', previewActiveRegionDilation);
+  dilateButton?.addEventListener('focus', previewActiveRegionDilation);
+  dilateButton?.addEventListener('pointerleave', clearPreview);
+  dilateButton?.addEventListener('mouseleave', clearPreview);
+  dilateButton?.addEventListener('blur', clearPreview);
+  dilateButton?.addEventListener('click', dilateActiveRegion);
   document.getElementById('btn-mesh-seg-clear-active')?.addEventListener('click', () => {
     if (regionVertexCount() === 0 || window.confirm('Clear the active region assignments?')) clearActiveRegion();
   });
