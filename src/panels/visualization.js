@@ -25,9 +25,9 @@ let lambertLights = [];
 
 const DEFAULT_DISPLAY_COLORS = Object.freeze({
   normals: '#00ffcc',
-  vertices: '#ff8c00',
-  edges: '#ff8c00',
-  faces: '#ff8c00',
+  vertices: '#ff5c8a',
+  edges: '#32b67a',
+  faces: '#8b7cf6',
   bbox: '#ffff00',
   grid: '#333333',
 });
@@ -1423,7 +1423,6 @@ export function initVizPanel() {
     },
   };
 }
-
 
 
 

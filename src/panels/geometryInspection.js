@@ -4,11 +4,10 @@ import { getCanonicalPositionAttribute, getCanonicalData } from '../tasks/meshTa
 import { getMeshSymmetry, symmetryPairs } from '../io/vertexSymmetry.js';
 
 const GEOMETRY_MARKER_RADIUS = 0.002;
-const DEFAULT_GEOMETRY_COLOR = '#ff8c00';
 const DEFAULT_GEOMETRY_COLORS = Object.freeze({
-  vertices: DEFAULT_GEOMETRY_COLOR,
-  edges: DEFAULT_GEOMETRY_COLOR,
-  faces: DEFAULT_GEOMETRY_COLOR,
+  vertices: '#ff5c8a',
+  edges: '#32b67a',
+  faces: '#8b7cf6',
   symmetry: '#00bcd4',
   symmetryLeft: '#ff3333',
   symmetryRight: '#2f80ff',
@@ -429,7 +428,7 @@ function clearAll() {
 }
 
 function applyGeometryColor(kind, color) {
-  const fallback = DEFAULT_GEOMETRY_COLORS[kind] || DEFAULT_GEOMETRY_COLOR;
+  const fallback = DEFAULT_GEOMETRY_COLORS[kind] || DEFAULT_GEOMETRY_COLORS.vertices;
   const next = color || fallback;
 
   if (!settings[kind]) return;

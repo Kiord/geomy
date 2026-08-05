@@ -193,7 +193,8 @@
 
 .mesh-mask-name {
   min-width: 0;
-  width: 100%;
+  width: calc(100% - 4px);
+  box-sizing: border-box;
   background: var(--panel-bg);
   color: var(--text);
   border: 1px solid transparent;

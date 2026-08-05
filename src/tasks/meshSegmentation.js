@@ -2183,7 +2183,7 @@ function renderPanel() {
   app.dom.taskContent.innerHTML = `
     <div class="task-heading">
       <h3>Mesh Segmentation</h3>
-      <span class="task-help" tabindex="0" data-tip="Partition vertices into exclusive regions. Alt+left-drag assigns the active region; Alt+right-drag clears. Shift handles connected components. Alt+wheel changes brush width. Enable geodesic brush to precompute an all-pairs distance LUT; painting switches to geodesic as soon as the LUT is ready. Ctrl+Z/Y undo/redo.">?</span>
+      <span class="task-help" tabindex="0" data-tip="Partition vertices into exclusive regions. Alt+left-drag assigns the active region; Alt+right-drag clears. Shift handles connected components. Alt+wheel changes brush width. Dilate expands the active region by one mesh edge. Symmetric painting also applies to dilation; New symmetric labels keeps unilateral counterparts separate while sagittal regions share one label. The geodesic brush switches on when its distance LUT is ready. Ctrl+Z/Y undo/redo.">?</span>
     </div>
 
     <div class="section-title">Edit Segmentation</div>
