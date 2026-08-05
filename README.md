@@ -5,7 +5,7 @@
 <h1 align="center">geomy</h1>
 
 <p align="center">
-  A browser-first mesh workbench for research, engineering, and prototyping.
+  A cross-platform mesh workbench for research, engineering, and prototyping in 3D graphics.
 </p>
 
 <p align="center">
@@ -16,7 +16,7 @@
 
 ## About
 
-geomy is a mesh workbench for research, engineering, and prototyping. It provides tools for inspection, annotation, masking, segmentation, and alignment.
+geomy is a mesh workbench for research, engineering, and prototyping in 3D graphics. It provides tools for inspection, annotation, masking, segmentation, and alignment.
 
 The application stays close to the source data. It does not silently weld, simplify, or re-index imported meshes. Vertex order and topology remain stable across inspection and annotation tasks, so exported indices and arrays still match the original mesh.
 
@@ -71,7 +71,7 @@ Desktop packages are published on the [GitHub Releases page](https://github.com/
 - Linux executable and `.deb` package
 - macOS `.dmg` package
 
-The desktop application uses the operating system's native webview. On Windows, WebView2 is included with current versions of Windows and is available separately from Microsoft for older installations. The Linux build requires GTK 3 and WebKitGTK 4.1 from the distribution.
+The desktop application uses the operating system's native webview. On Windows, WebView2 is included with current versions of Windows and is available separately from Microsoft for older installations. The Linux build requires GTK 3 and WebKitGTK 4.1 from the distribution. *Linux version currently suffers from slow-path WebGL rendering, prefer browser version*.
 
 ## Development
 
